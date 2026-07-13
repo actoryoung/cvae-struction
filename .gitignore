@@ -1,0 +1,46 @@
+# 数据集（过大，不纳入版本控制）
+casp_dataset/
+
+# 模型 checkpoint
+checkpoints/
+
+# 外部克隆仓库
+CASP/
+SDUMC/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 数据文件（过大）
+*.pkl
+*.npy
+*.h5
+*.npz
+*.zip
+*.tar
+*.gz
+*.csv
+
+# 结果
+results/
+
+# 系统文件
+.DS_Store
+Thumbs.db
