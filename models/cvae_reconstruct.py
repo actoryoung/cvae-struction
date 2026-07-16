@@ -50,18 +50,24 @@ class CVAEModalityReconstructor(nn.Module):
       Decoder: concat(z, h_avail) → MLP → reconstructed h_missing
     """
 
-    def __init__(self, proj_dim=40, num_mods=3, latent_dim=32, hidden_dim=64):
+    def __init__(self, proj_dim=40, num_mods=3, latent_dim=32, hidden_dim=64, proj_dims=None):
         super().__init__()
-        self.proj_dim = proj_dim
+        # Support both single proj_dim (backward compat) and per-modality proj_dims
+        if proj_dims is None:
+            proj_dims = [proj_dim] * num_mods
+        self.proj_dims = proj_dims
+        self.max_proj = max(proj_dims)
         self.num_mods = num_mods
         self.latent_dim = latent_dim
+        self.proj_dim = self.max_proj  # for backward compat
 
-        # Encoder input: concat of h_avail (up to 2*proj_dim) + h_missing_true (proj_dim)
-        # Max input dim: 2*proj_dim + proj_dim = 3*proj_dim
-        max_input = num_mods * proj_dim
+        # Max encoder input: (num_mods-1)*max_proj (padded avail) + max_proj (padded target)
+        max_enc_input = (num_mods - 1) * self.max_proj + self.max_proj
+        # Max decoder input: latent + (num_mods-1)*max_proj (padded avail)
+        max_dec_input = latent_dim + (num_mods - 1) * self.max_proj
 
         self.encoder = nn.Sequential(
-            nn.Linear(max_input, hidden_dim),
+            nn.Linear(max_enc_input, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -69,16 +75,24 @@ class CVAEModalityReconstructor(nn.Module):
         self.mu_head = nn.Linear(hidden_dim, latent_dim)
         self.logvar_head = nn.Linear(hidden_dim, latent_dim)
 
-        # Decoder input: z (latent_dim) + h_avail (up to 2*proj_dim)
-        max_decoder_input = latent_dim + (num_mods - 1) * proj_dim
-
         self.decoder = nn.Sequential(
-            nn.Linear(max_decoder_input, hidden_dim),
+            nn.Linear(max_dec_input, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, proj_dim),  # reconstruct one modality's h
+            nn.Linear(hidden_dim, self.max_proj),  # always output max_proj
         )
+
+    def _pad_features(self, hs):
+        """Pad each h to max_proj dim, then concat."""
+        padded = []
+        for h in hs:
+            d = h.shape[-1]
+            if d < self.max_proj:
+                zeros = torch.zeros(*h.shape[:-1], self.max_proj - d, device=h.device, dtype=h.dtype)
+                h = torch.cat([h, zeros], dim=-1)
+            padded.append(h)
+        return torch.cat(padded, dim=-1)
 
     def encode(self, h_avail, h_missing_true):
         """q(z | h_avail, h_missing_true) → μ, logvar"""
@@ -89,51 +103,67 @@ class CVAEModalityReconstructor(nn.Module):
         return mu, logvar
 
     def reparameterize(self, mu, logvar):
-        """Sample z ~ N(mu, sigma) using reparameterization trick."""
+        """Sample z ~ N(mu, sigma) using reparameterization trick (exp in fp32 for stability)."""
         if self.training:
-            std = torch.exp(0.5 * logvar)
+            std = torch.exp(0.5 * logvar.float()).to(logvar.dtype)
             eps = torch.randn_like(std)
             return mu + eps * std
         else:
-            return mu  # deterministic at inference
+            return mu
 
     def decode(self, z, h_avail):
-        """p(h_missing | z, h_avail) → reconstructed h_missing"""
+        """p(h_missing | z, h_avail) → reconstructed h_missing [B, max_proj]"""
         x = torch.cat([z, h_avail], dim=-1)
         return self.decoder(x)
 
-    def forward(self, h_avail, h_missing_true=None):
+    def forward(self, h_avail_list, h_missing_true, drop_idx):
         """
         Args:
-            h_avail: [B, (num_mods-1)*proj_dim] concatenated available h's
-            h_missing_true: [B, proj_dim] true missing modality h (training only)
+            h_avail_list: list of available h tensors [each [B, proj_dims[i]]]
+            h_missing_true: [B, target_dim] true missing modality h
+            drop_idx: which modality is missing (0=T, 1=A, 2=V)
         Returns:
-            h_recon: [B, proj_dim] reconstructed modality representation
-            (mu, logvar): if training, for KL loss
+            h_recon: [B, target_dim] — sliced to correct dimension
+            (mu, logvar): if training
         """
-        if self.training and h_missing_true is not None:
-            mu, logvar = self.encode(h_avail, h_missing_true)
-            z = self.reparameterize(mu, logvar)
-            h_recon = self.decode(z, h_avail)
-            return h_recon, mu, logvar
-        else:
-            # Inference: sample from prior p(z|h_avail) = N(0, I)
-            # Actually use deterministic: encode h_avail only → decoder
-            # Simple approach: just use zero latent
-            batch_size = h_avail.shape[0]
-            device = h_avail.device
-            z = torch.zeros(batch_size, self.latent_dim, device=device)
-            h_recon = self.decode(z, h_avail)
-            return h_recon
+        target_dim = self.proj_dims[drop_idx]
+        h_avail_padded = self._pad_features(h_avail_list)
 
-    def reconstruct(self, h_avail):
-        """Inference-only: reconstruct missing modality from available ones."""
-        return self.forward(h_avail, h_missing_true=None)
+        # Pad target to max_proj for encoder
+        if h_missing_true.shape[-1] < self.max_proj:
+            pad = torch.zeros(h_missing_true.shape[0], self.max_proj - h_missing_true.shape[-1],
+                              device=h_missing_true.device, dtype=h_missing_true.dtype)
+            h_missing_padded = torch.cat([h_missing_true, pad], dim=-1)
+        else:
+            h_missing_padded = h_missing_true
+
+        if self.training:
+            mu, logvar = self.encode(h_avail_padded, h_missing_padded)
+            z = self.reparameterize(mu, logvar)
+            h_recon_full = self.decode(z, h_avail_padded)
+            return h_recon_full[:, :target_dim], mu, logvar
+        else:
+            batch_size = h_avail_padded.shape[0]
+            device = h_avail_padded.device
+            z = torch.zeros(batch_size, self.latent_dim, device=device)
+            h_recon_full = self.decode(z, h_avail_padded)
+            return h_recon_full[:, :target_dim]
+
+    def reconstruct(self, h_avail_list, drop_idx):
+        """Reconstruct missing modality. z~N(0,I) for MC robustness."""
+        target_dim = self.proj_dims[drop_idx]
+        h_avail_padded = self._pad_features(h_avail_list)
+        batch_size = h_avail_padded.shape[0]
+        device = h_avail_padded.device
+        z = torch.randn(batch_size, self.latent_dim, device=device)
+        h_recon_full = self.decode(z, h_avail_padded)
+        return h_recon_full[:, :target_dim]
 
 
 def kl_divergence(mu, logvar):
-    """KL(N(mu, sigma) || N(0, I))"""
-    return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1).mean()
+    """KL(N(mu, sigma) || N(0, I)) — computed in fp32 for numerical stability."""
+    mu32, lv32 = mu.float(), logvar.float()
+    return (-0.5 * torch.sum(1 + lv32 - mu32.pow(2) - lv32.exp(), dim=-1).mean())
 
 
 # ─── CVAE-Enhanced MSA Model ────────────────────────────────────────
@@ -162,40 +192,48 @@ class CVAEMSA(nn.Module):
         attn_dropout=0.1,
         cvae_latent=32,
         cvae_hidden=64,
+        proj_dims=None,
     ):
         super().__init__()
-        self.proj_dim = proj_dim
         self.orig_dim = orig_dim
         self.num_mods = len(orig_dim)
+        # Support per-modality projection dimensions
+        if proj_dims is None:
+            proj_dims = [proj_dim] * self.num_mods
+        self.proj_dims = proj_dims
+        self.proj_dim = sum(proj_dims)  # total concat dim (for backward compat)
 
-        # Projection + Encoders (same as all previous models)
+        # Per-modality projections (each with its own dim)
         self.proj = nn.ModuleList([
-            nn.Conv1d(self.orig_dim[i], self.proj_dim, kernel_size=1, padding=0)
+            nn.Conv1d(self.orig_dim[i], self.proj_dims[i], kernel_size=1, padding=0)
             for i in range(self.num_mods)
         ])
+        # Per-modality Transformer encoders (each with its own embed_dim)
         self.encoders = nn.ModuleList([
             TransformerEncoder(
-                embed_dim=proj_dim, num_heads=num_heads, layers=layers,
+                embed_dim=self.proj_dims[i], num_heads=num_heads, layers=layers,
                 attn_dropout=attn_dropout, res_dropout=res_dropout,
                 relu_dropout=relu_dropout, embed_dropout=embed_dropout,
             )
-            for _ in range(self.num_mods)
+            for i in range(self.num_mods)
         ])
 
-        # CVAE for modality reconstruction
+        # CVAE for modality reconstruction (handles asymmetric dims via padding)
         self.cvae = CVAEModalityReconstructor(
-            proj_dim=proj_dim, num_mods=self.num_mods,
-            latent_dim=cvae_latent, hidden_dim=cvae_hidden
+            proj_dim=max(proj_dims), num_mods=self.num_mods,
+            latent_dim=cvae_latent, hidden_dim=cvae_hidden,
+            proj_dims=proj_dims,
         )
 
-        # Output head
+        # Output head: sum(proj_dims) → output_dim (compressing pyramid)
+        total_dim = sum(proj_dims)
         self.output_head = nn.Sequential(
-            nn.Linear(self.num_mods * proj_dim, proj_dim * 2),
+            nn.Linear(total_dim, total_dim * 2 // 3),
             nn.ReLU(),
             nn.Dropout(out_dropout),
-            nn.Linear(proj_dim * 2, proj_dim),
+            nn.Linear(total_dim * 2 // 3, total_dim // 3),
             nn.ReLU(),
-            nn.Linear(proj_dim, output_dim),
+            nn.Linear(total_dim // 3, output_dim),
         )
 
     def encode_modality(self, x_i, encoder_idx):
@@ -235,37 +273,61 @@ class CVAEMSA(nn.Module):
         missing_indices = [i for i in range(self.num_mods) if is_missing[i]]
 
         if missing_indices and len(available_hs) > 0:
-            h_avail = torch.cat(available_hs, dim=-1)  # [B, k*proj_dim]
-
             for mi in missing_indices:
-                if self.training and hs[mi] is None:
-                    # During training with dropout: we have the true h but want CVAE to learn
-                    # Need to encode the true modality to get ground truth for CVAE
-                    # But we can't encode a zero tensor... use a special handling
-                    pass
-
-                # Reconstruct using CVAE
-                h_recon = self.cvae.reconstruct(h_avail)
+                h_recon = self.cvae.reconstruct(available_hs, mi)
                 hs[mi] = h_recon
 
-                if return_cvae_loss and self.training:
-                    # For CVAE loss, need true h_missing
-                    # This is set in training loop by calling with actual modality zeros
-                    pass
-
-        # Fill any remaining None with zeros (shouldn't happen normally)
+        # Fill any remaining None with zeros of correct dimension
         for i in range(self.num_mods):
             if hs[i] is None:
-                hs[i] = torch.zeros(batch_size, self.proj_dim, device=device)
+                hs[i] = torch.zeros(batch_size, self.proj_dims[i], device=device)
 
         # Concat all and predict
-        h_cat = torch.cat(hs, dim=-1)  # [B, 3*proj_dim]
+        h_cat = torch.cat(hs, dim=-1)
         output = self.output_head(h_cat)
 
-        # Also return hs for consistency/CVAE loss
-        all_hs = torch.stack(hs, dim=1)  # [B, 3, proj_dim]
+        return output, None
 
-        return output, all_hs
+    def mc_forward(self, x, k=5):
+        """Multi-sample inference: average predictions over K latent samples.
+        Uses sampled z ~ N(0,I) instead of z=0 for missing modalities."""
+        self.eval()
+        batch_size = x[0].shape[0]
+        device = x[0].device
+        hs, is_missing = [], []
+        for i in range(self.num_mods):
+            miss = (x[i].abs().sum() < 1e-8).item()
+            is_missing.append(miss)
+            if miss:
+                hs.append(None)
+            else:
+                h_pooled, _ = self.encode_modality(x[i], i)
+                hs.append(h_pooled)
+        available_hs = [hs[i] for i in range(self.num_mods) if not is_missing[i] and hs[i] is not None]
+        missing_indices = [i for i in range(self.num_mods) if is_missing[i]]
+        if missing_indices and len(available_hs) > 0:
+            h_avail_padded = self.cvae._pad_features(available_hs)
+            outputs = []
+            for _ in range(k):
+                hs_k = hs.copy()
+                for mi in missing_indices:
+                    z = torch.randn(batch_size, self.cvae.latent_dim, device=device)
+                    h_recon_full = self.cvae.decode(z, h_avail_padded)
+                    target_dim = self.proj_dims[mi]
+                    hs_k[mi] = h_recon_full[:, :target_dim]
+                for i in range(self.num_mods):
+                    if hs_k[i] is None:
+                        hs_k[i] = torch.zeros(batch_size, self.proj_dims[i], device=device)
+                h_cat = torch.cat(hs_k, dim=-1)
+                outputs.append(self.output_head(h_cat))
+            output = torch.stack(outputs).mean(dim=0)
+        else:
+            for i in range(self.num_mods):
+                if hs[i] is None:
+                    hs[i] = torch.zeros(batch_size, self.proj_dims[i], device=device)
+            h_cat = torch.cat(hs, dim=-1)
+            output = self.output_head(h_cat)
+        return output
 
     def forward_with_dropout(self, x, drop_idx):
         """
@@ -275,27 +337,24 @@ class CVAEMSA(nn.Module):
             x: full modality input
             drop_idx: which modality to drop (0=text, 1=audio, 2=vision)
         Returns:
-            output: [B, 1]
-            h_recon: [B, proj_dim] CVAE reconstructed h for dropped modality
-            h_true: [B, proj_dim] true h for dropped modality (for CVAE loss)
+            output, h_recon, h_missing_true, mu, logvar, h_avail_padded
         """
         # Encode all modalities
-        batch_size = x[0].shape[0]
-        device = x[0].device
         hs_true = []
         for i in range(self.num_mods):
             h, _ = self.encode_modality(x[i], i)
             hs_true.append(h)
 
-        # Build available and missing
         available_hs = [hs_true[i] for i in range(self.num_mods) if i != drop_idx]
-        h_avail = torch.cat(available_hs, dim=-1)
         h_missing_true = hs_true[drop_idx]
 
-        # CVAE forward (training mode: encode → sample → decode)
-        h_recon, mu, logvar = self.cvae(h_avail, h_missing_true)
+        # CVAE asymmetric forward: pass list + drop_idx
+        h_recon, mu, logvar = self.cvae(available_hs, h_missing_true, drop_idx)
 
-        # Build full h list with reconstruction
+        # h_avail padded (for contrastive alignment)
+        h_avail_padded = self.cvae._pad_features(available_hs)
+
+        # Build full h list
         hs_final = []
         for i in range(self.num_mods):
             if i == drop_idx:
@@ -306,7 +365,7 @@ class CVAEMSA(nn.Module):
         h_cat = torch.cat(hs_final, dim=-1)
         output = self.output_head(h_cat)
 
-        return output, h_recon, h_missing_true, mu, logvar
+        return output, h_recon, h_missing_true, mu, logvar, h_avail_padded
 
 
 def modality_dropout(x, drop_probs=None):
@@ -411,7 +470,8 @@ class AttnCVAEReconstructor(nn.Module):
 
     def reparameterize(self, mu, logvar):
         if self.training:
-            return mu + torch.randn_like(mu) * torch.exp(0.5 * logvar)
+            std = torch.exp(0.5 * logvar.float()).to(logvar.dtype)
+            return mu + torch.randn_like(mu) * std
         return mu
 
     def decode(self, z, h_avail, h_list):
@@ -440,8 +500,13 @@ class AttnCVAEReconstructor(nn.Module):
             return h_recon
 
     def reconstruct(self, h_avail, h_list_avail=None):
-        """Inference-only: reconstruct missing modality from available ones."""
-        return self.forward(h_avail, h_list_avail, h_missing_true=None)
+        """Reconstruct with random z for MC robustness."""
+        B, D = h_avail.shape[0], self.latent_dim
+        z = torch.randn(B, D, device=h_avail.device)
+        if h_list_avail:
+            return self.decode(z, h_avail, h_list_avail)
+        else:
+            return self.decode(z, h_avail)
 
 
 class CVAEMSA_Attn(CVAEMSA):
@@ -505,7 +570,7 @@ class CVAEMSA_Attn(CVAEMSA):
 
         h_cat = torch.cat(hs_final, dim=-1)
         output = self.output_head(h_cat)
-        return output, h_recon, h_missing_true, mu, logvar
+        return output, h_recon, h_missing_true, mu, logvar, h_avail
 
 
 # ─── Sanity Check ───────────────────────────────────────────────────
