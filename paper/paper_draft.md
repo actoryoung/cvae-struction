@@ -2,7 +2,7 @@
 
 > **Target**: EMNLP / COLING / AAAI 2027
 > **Status**: Complete experimental phase (66 runs across 2 datasets)
-> **Figures**: fig1–4 in `paper/figures/`
+> **Figures**: 7 embedded figures (fig0–fig6) | **Draft for advisor review**
 
 ---
 
@@ -32,6 +32,8 @@ Our contributions are:
 - **Method**: CVAE-MSA achieves state-of-the-art missing-text robustness in the classical feature regime with +30K parameters
 - **Analysis**: The first systematic hyperparameter study for VAE-based missing modality methods, revealing KL weight as the dominant factor and its interaction with auxiliary strategies
 - **Cross-dataset insight**: Demonstration that VAE-based reconstruction has a minimum dataset size requirement, raising an open problem for the field
+
+![Figure 0: Overview — Fusion-space reconstruction vs raw feature space, and the beta-U curve showing KL dominance](figures/fig0_overview_teaser.png)
 
 ---
 
@@ -84,6 +86,8 @@ Training drops one modality uniformly at random. The KL weight $\beta$ is the cr
 | Output Head | Linear(120→80→40→1) | ~11K |
 | **Total** | | **~378K** |
 
+![Figure 6: CVAE-MSA Architecture — full pipeline from modality inputs through encoders, CVAE reconstructor, fusion, and output](figures/fig6_architecture.png)
+
 ---
 
 ## 4. Experimental Setup
@@ -126,7 +130,11 @@ We conducted a fractional factorial sweep (30 runs, MOSEI) over KL weight {0.05,
 | MissA | 0.746 | 0.759 | 0.755 | 0.751 |
 | MissV | 0.743 | 0.755 | 0.744 | 0.744 |
 
-Figure 4 illustrates this progression from default CVAE to the optimal configuration: MissT climbs from 0.525 to 0.597 (+7.2pp) while Full accuracy remains stable (0.75–0.76).
+![Figure 1: Beta-U curve showing the effect of KL weight on missing-text robustness, with MOSEI (left) and MOSI (right) side by side](figures/fig1_kl_beta_u_curve.png)
+
+![Figure 4: Progression from default CVAE to optimal configuration — MissT climbs +7.2pp while Full accuracy remains stable](figures/fig4_progression.png)
+
+*Figure 4*: MissT climbs from 0.525 to 0.597 (+7.2pp) while Full accuracy remains stable (0.75–0.76).
 
 **MOSI** (Table 2): CVAE-MSA improves Full/MissA/MissV over concat (+2–3pp), but MissT cannot match concat—the best MissT (0.565 at KL→0) trails concat (0.599) by 3.4pp.
 
@@ -141,7 +149,9 @@ Figure 4 illustrates this progression from default CVAE to the optimal configura
 
 Figure 1 shows the effect of KL weight on MissT for both datasets. On MOSEI, the β-U curve exhibits a dual-peak structure with maxima at β=0.4 and β=0.8. Critically, β ∈ {0.05, 0.1, 0.2}—the range typically explored in VAE literature—all produce MissT clustered around 0.53, nearly 6pp below the optimum. The jump at β=0.4 is not gradual but phase-transition-like.
 
-Variance decomposition (Figure 3) confirms KL weight as the dominant factor: it explains 63.3% of MissT variance, more than three times the combined contribution of learning rate (18.5%), reconstruction weight (9.3%), and dropout (8.0%).
+![Figure 3: Variance decomposition — KL weight explains 63.3% of MissT variance, dominating all other factors combined](figures/fig3_variance_decomposition.png)
+
+*Figure 3*: KL weight explains 63.3% of MissT variance, more than three times the combined contribution of learning rate (18.5%), reconstruction weight (9.3%), and dropout (8.0%).
 
 **Theoretical interpretation**: Low β permits posterior collapse—the CVAE learns to ignore the latent variable and produces brittle reconstructions that fail at test time (when the true target is unavailable). Higher β forces the latent to retain meaningful cross-modal information, enabling genuinely useful reconstruction. However, β > 0.8 may over-regularize (KL=1.0 drops to MissT=0.556).
 
@@ -149,11 +159,17 @@ On MOSI, the pattern is qualitatively different: MissT decreases monotonically w
 
 ### 5.3 Strategy Benefits Decay with KL
 
-Figure 2 quantifies how the benefits of MC inference and contrastive alignment vary with KL weight. Both strategies provide substantial gains at low KL (MC: +4.5pp, Contrastive: +5.9pp at β=0.1), but their marginal benefit decays to near zero at β≥0.5. At β=0.8, neither strategy improves MissT over the pure CVAE baseline.
+![Figure 2: Strategy benefits decay with KL regularization — MC and contrastive gains vanish at high KL](figures/fig2_strategy_decay.png)
+
+*Figure 2* quantifies how the benefits of MC inference and contrastive alignment vary with KL weight. Both strategies provide substantial gains at low KL (MC: +4.5pp, Contrastive: +5.9pp at β=0.1), but their marginal benefit decays to near zero at β≥0.5. At β=0.8, neither strategy improves MissT over the pure CVAE baseline.
 
 This interaction has a clear interpretation: at low β, the CVAE's latent space is poorly regularized, and auxiliary strategies compensate by providing additional training signal (contrastive) or reducing inference variance (MC). At high β, the KL term already enforces a well-behaved latent space, making these strategies redundant.
 
 We further tested **stacking MC + Contrastive** (KL=0.5) and found it to be *antagonistic*: the combined configuration (MissT=0.581) underperformed either strategy alone (MC: 0.592, CT: 0.588). We hypothesize that MC's random sampling noise disrupts the aligned representations learned by contrastive training.
+
+![Figure 5: KL × Reconstruction Weight interaction — heatmap and line plot showing the interaction pattern across KL values](figures/fig5_kl_recon_interaction.png)
+
+*Figure 5*: The KL×Recon interaction reveals that at low KL, lower reconstruction weight is preferable (weak regularization causes reconstruction to overfit), while at high KL, medium-to-high reconstruction weight becomes beneficial (strong regularization keeps reconstruction reliable).
 
 ### 5.4 Cross-Modal Information Analysis
 
