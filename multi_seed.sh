@@ -72,7 +72,7 @@ run_one() {
 }
 
 echo "── MOSEI (8 runs) ──"
-for SEED in 42 123; do
+for SEED in 20260113 20040169; do
     # concat baseline
     run_one mosei 0 0 0 1 $SEED concat "MOSEI concat" "$MOSEI_DATA"
     # KL=0.4 pure CVAE
@@ -84,7 +84,7 @@ for SEED in 42 123; do
 done
 
 echo "── MOSI (8 runs) ──"
-for SEED in 42 123; do
+for SEED in 20260113 20040169; do
     # concat baseline
     run_one mosi 0 0 0 1 $SEED concat "MOSI concat" "$MOSI_DATA"
     # KL=0.001 CVAE (best MissT on MOSI)
