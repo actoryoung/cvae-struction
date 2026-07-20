@@ -103,13 +103,18 @@ Training drops one modality uniformly at random. The KL weight $\beta$ is the cr
 
 Four settings: Full, Missing Text ($\text{Miss}_T$), Missing Audio ($\text{Miss}_A$), Missing Vision ($\text{Miss}_V$). Primary metric: binary accuracy (Acc-2). Missing modalities zeroed at input.
 
-### 4.3 Baselines
+### 4.3 Baselines and Comparison Rationale
 
-All methods use the same feature regime (GloVe + COVAREP + FACET):
-- **concat** (CASP LateFusion): zero-filling baseline
-- **UADG**: uncertainty-aware gating (+40K params)
-- **Evidential NIG**: Normal-Inverse Gamma fusion (+120K params)
-- **ContraMSA**: cross-modal contrastive alignment (+80K params)
+All methods share the **identical modality encoders** (Conv1d projection + 5-layer Transformer encoder at 40-dim, inherited from CASP, Guo et al., 2025) and the same pretrained features (GloVe, COVAREP, FACET). We compare the following fusion strategies:
+
+- **concat** (CASP LateFusion): zero-filling baseline. Missing modality representations replaced with zero vectors.
+- **UADG**: uncertainty-aware gating that modulates each modality's contribution (+40K params)
+- **Evidential NIG**: Normal-Inverse Gamma evidence-based fusion (+120K params)
+- **ContraMSA**: cross-modal contrastive alignment loss (+80K params)
+
+**Why concat is a strong and sufficient baseline.** In the classical feature regime, the predominant finding across prior work is that *all* "intelligent" fusion architectures either match or underperform simple late fusion with zero-filling on missing-text robustness. UADG, evidential, and contrastive methods all degrade MissT relative to concat (see Section 5.5). This is not a failure of these methods—it reflects a fundamental information bottleneck: audio and visual features carry negligible independent sentiment signal ($R^2 = -0.078$ jointly), so no fusion strategy can compensate for missing text. The concat baseline therefore represents the **practical upper bound** achievable by passive (ignore-missing) fusion strategies in this feature regime. Our contribution is demonstrating that active reconstruction in fusion space can surpass this bound.
+
+We do not compare against methods using different feature extractors (e.g., MulT with BERT, SDUMC with WavLM) because feature enhancement is orthogonal to our fusion-space reconstruction approach—CVAE-MSA can be inserted into any feature extraction pipeline. A controlled comparison under identical encoders isolates the effect of our proposed fusion-space reconstruction.
 
 ### 4.4 Hyperparameter Sweep Design
 
