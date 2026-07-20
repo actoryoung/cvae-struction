@@ -105,16 +105,11 @@ Four settings: Full, Missing Text ($\text{Miss}_T$), Missing Audio ($\text{Miss}
 
 ### 4.3 Baselines and Comparison Rationale
 
-All methods share the **identical modality encoders** (Conv1d projection + 5-layer Transformer encoder at 40-dim, inherited from CASP, Guo et al., 2025) and the same pretrained features (GloVe, COVAREP, FACET). We compare the following fusion strategies:
+All methods share the **identical modality encoders** (Conv1d projection + 5-layer Transformer encoder at 40-dim, inherited from CASP, Guo et al., 2025) and the same pretrained features (GloVe, COVAREP, FACET). Our primary comparison is:
 
-- **concat** (CASP LateFusion): zero-filling baseline. Missing modality representations replaced with zero vectors.
-- **UADG**: uncertainty-aware gating that modulates each modality's contribution (+40K params)
-- **Evidential NIG**: Normal-Inverse Gamma evidence-based fusion (+120K params)
-- **ContraMSA**: cross-modal contrastive alignment loss (+80K params)
+- **concat** (CASP LateFusion): The zero-filling baseline — missing modality representations are replaced with zero vectors.
 
-**Why concat is a strong and sufficient baseline.** In the classical feature regime, the predominant finding across prior work is that *all* "intelligent" fusion architectures either match or underperform simple late fusion with zero-filling on missing-text robustness. UADG, evidential, and contrastive methods all degrade MissT relative to concat (see Section 5.5). This is not a failure of these methods—it reflects a fundamental information bottleneck: audio and visual features carry negligible independent sentiment signal ($R^2 = -0.078$ jointly), so no fusion strategy can compensate for missing text. The concat baseline therefore represents the **practical upper bound** achievable by passive (ignore-missing) fusion strategies in this feature regime. Our contribution is demonstrating that active reconstruction in fusion space can surpass this bound.
-
-We do not compare against methods using different feature extractors (e.g., MulT with BERT, SDUMC with WavLM) because feature enhancement is orthogonal to our fusion-space reconstruction approach—CVAE-MSA can be inserted into any feature extraction pipeline. A controlled comparison under identical encoders isolates the effect of our proposed fusion-space reconstruction.
+We additionally explored several alternative fusion strategies in preliminary experiments: uncertainty-aware gating (UADG, +40K), evidential fusion (NIG, +120K), and cross-modal contrastive alignment (+80K). All of these underperformed concat on missing-text robustness by 5–10pp, consistent with prior observations that passive fusion strategies cannot overcome the information poverty of available modalities in this feature regime. We briefly note these results but focus our controlled comparison on concat vs. CVAE-MSA.
 
 ### 4.4 Hyperparameter Sweep Design
 
@@ -193,13 +188,10 @@ Audio and vision carry **no independent sentiment signal** in classical features
 
 | Method | Extra Params | MOSEI MissT | MOSI MissT |
 |--------|:---:|:--:|:--:|
-| concat | 0 | 0.587 | **0.599** |
-| UADG | +40K | 0.535 | — |
-| Evidential NIG | +120K | 0.510 | — |
-| ContraMSA | +80K | 0.490 | — |
+| concat (CASP) | 0 | 0.587 | **0.599** |
 | **CVAE-MSA (Ours)** | **+30K** | **0.597** | 0.565 |
 
-CVAE-MSA achieves the highest MOSEI MissT with the smallest parameter overhead, and ties concat on MOSI Full while improving MissA/MissV.
+CVAE-MSA achieves the highest MOSEI MissT with the smallest parameter overhead (+30K, 8.8%). On MOSI, it matches concat on Full/MissA/MissV while trailing on MissT (see Section 6.2). In preliminary experiments, alternative fusion strategies (uncertainty gating, evidential fusion, contrastive alignment) all underperformed concat on MissT by 5–10pp with 1.3–4× the parameter cost, and are not included in this formal comparison.
 
 ---
 
