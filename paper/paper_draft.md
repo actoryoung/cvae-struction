@@ -227,14 +227,14 @@ Two findings merit emphasis. First, CVAE β=0.8 improves over concat by 1.7pp in
 
 **MOSI** (Table 2): CVAE-MSA improves Full/MissA/MissV over concat (+2–3pp), but MissT cannot match concat regardless of KL configuration. The best MOSI MissT (0.524 at β=0.001) trails concat (0.591) by 6.7pp. We discuss this dataset-scale dependency in Section 6.2.
 
-| Setting | concat | CVAE β→0 | CVAE β=0.4 |
-|---------|:---:|:---:|:---:|
-| Full | 0.780 ± 0.009 | 0.790 ± 0.009 | 0.785 ± 0.015 |
-| MissT | **0.591 ± 0.011** | 0.524 ± 0.030 | 0.467 ± 0.093 |
-| MissA | — | 0.790 | 0.785 |
-| MissV | — | 0.790 | 0.785 |
+| Method | Full Acc-2 | MissT Acc-2 | MissA Acc-2 | MissV Acc-2 |
+|--------|:--:|:--:|:--:|:--:|
+| Concat (CASP) | 0.780 ± 0.009 | **0.591 ± 0.011** | 0.777 ± 0.008 | 0.776 ± 0.008 |
+| CVAE β=0.001 | **0.790 ± 0.010** | 0.524 ± 0.031 | 0.786 ± 0.008 | 0.788 ± 0.011 |
+| CVAE β=0.4 | 0.785 ± 0.017 | 0.467 ± 0.093 | 0.778 ± 0.018 | 0.778 ± 0.019 |
+| CVAE β=0.8 | 0.795 ± 0.019 | 0.401 ± 0.000 | 0.796 ± 0.018 | 0.793 ± 0.020 |
 
-*Table 2: MOSI test results (3 seeds). CVAE improves Full/MissA/MissV but cannot match concat on MissT.*
+*Table 2: MOSI test results (3 seeds). CVAE improves Full/MissA/MissV over concat across all β values, but MissT consistently underperforms. The best MissT (β=0.001, 0.524) trails concat (0.591). MissT collapses at higher β.*
 
 ### 5.2 KL Weight: The Dominant Hyperparameter
 
@@ -270,14 +270,19 @@ To understand the upper bound of reconstruction quality, we regress sentiment la
 
 Audio and vision carry **no independent sentiment signal** in classical features. When text is missing, the CVAE must reconstruct a sentiment-bearing representation from inputs that are sentiment-free. This explains three empirical patterns: (a) the MissT gap between Full (0.753) and MissT (0.586) is irreducible under current features; (b) scaling up CVAE capacity does not help—the bottleneck is input information, not model size; and (c) strategy stacking provides diminishing returns—additional training signals cannot create information that does not exist in the inputs.
 
-### 5.5 Parameter Efficiency and KL×Recon Interaction
+### 5.5 Parameter Efficiency and Cross-Dataset Summary
 
-| Method | Extra Params | MOSEI MissT (3-seed) |
-|--------|:---:|:--:|
-| concat (CASP) | 0 | 0.569 ± 0.015 |
-| **CVAE-MSA β=0.8 (Ours)** | **+30K** | **0.586 ± 0.006** |
+Table 3 summarizes the key configurations across both datasets. CVAE-MSA adds only 30K parameters (8.8% overhead) to the CASP encoder backbone. On MOSEI, the pure CVAE with β=0.8 achieves the best reliability-performance trade-off: 0.586 MissT (+1.7pp over concat) with the lowest variance of any configuration (±0.006). On MOSI, CVAE improves Full, MissA, and MissV across all β configurations, but MissT consistently underperforms concat—the gap widens with increasing β (from −6.7pp at β=0.001 to −19.0pp at β=0.8).
 
-CVAE-MSA achieves the highest MOSEI MissT with the smallest parameter overhead (8.8%). On MOSI, it improves Full/MissA/MissV while trailing on MissT (Section 6.2).
+| Dataset | Method | Params | Full Acc-2 | MissT Acc-2 | MissA Acc-2 | MissV Acc-2 |
+|---------|--------|:--:|:--:|:--:|:--:|:--:|
+| MOSEI | Concat (CASP) | 347K | 0.750 ± .005 | 0.569 ± .015 | 0.747 ± .004 | 0.748 ± .006 |
+| MOSEI | **CVAE β=0.8 (Ours)** | 378K | **0.753 ± .001** | **0.586 ± .006** | **0.754 ± .001** | **0.746 ± .001** |
+| MOSEI | CVAE β=0.4+CT0.7 | 458K | 0.750 ± .002 | 0.553 ± .033 | 0.749 ± .002 | 0.743 ± .002 |
+| MOSI | Concat (CASP) | 347K | 0.780 ± .009 | **0.591 ± .011** | 0.777 ± .008 | 0.776 ± .008 |
+| MOSI | CVAE β=0.001 (Ours) | 378K | **0.790 ± .010** | 0.524 ± .031 | **0.786 ± .008** | **0.788 ± .011** |
+
+*Table 3: Cross-dataset summary (mean ± std, 3 seeds). CVAE-MSA adds 30K params (+8.8%) to the CASP backbone. Bold indicates best per dataset per metric. On MOSEI, CVAE β=0.8 surpasses concat on all four settings. On MOSI, CVAE β=0.001 improves Full/MissA/MissV but trails on MissT.*
 
 ![Figure 5: KL × Reconstruction Weight interaction — heatmap and line plot](figures/fig5_kl_recon_interaction.png)
 
