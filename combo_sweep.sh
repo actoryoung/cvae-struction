@@ -1,9 +1,9 @@
 #!/bin/bash
 # ============================================================
-# Combo Sweep: 叠加有效策略
-# KL=0.5 作为基础 + MC + Contrastive + Capacity
-# + KL refinement 扫 [0.3-1.0] 找 β-U 曲线最优点
-# 6 路并行，21 个组合
+# Combo Sweep v2: 叠加有效策略 (跳过已完成的 6 个)
+# ✅ Block 0:  Verification baselines (2) — COMPLETED
+# ✅ Block 0.5: KL=0.3/0.4/0.6/0.8 — COMPLETED
+# 🔄 Block 0.5: KL=1.0 + Block 1-4: 15 个剩余
 # ============================================================
 set +e
 
@@ -14,11 +14,10 @@ DATA="casp_dataset/mosei_pt"
 EPOCHS=30; BS=32; WORKERS=0; SEED=666; N_PARALLEL=6
 LOG_DIR="/tmp/combo_sweep"
 CKPT_DIR="checkpoints/combo"
-RESULTS_DIR="results"
 mkdir -p "$LOG_DIR" "$CKPT_DIR"
 
 echo "============================================================"
-echo "Combo Sweep: KL=0.5 + MC + Contrastive + Capacity"
+echo "Combo Sweep v2: 15 remaining (6 completed in v1)"
 echo "============================================================"
 echo "Started at: $(date)"
 echo ""
@@ -29,7 +28,6 @@ COUNT=0
 run_one() {
     local KL=$1 RW=$2 DP=$3 LR=$4 MC=$5 CW=$6 LATENT=$7 HIDDEN=$8 DESC=$9
     COUNT=$((COUNT + 1))
-    # Build unique name
     local NAME="combo_kl${KL}_rw${RW}_dp${DP}_lr${LR}"
     [ "$MC" -gt 1 ] && NAME="${NAME}_mc${MC}"
     [ "$CW" != "0" ] && NAME="${NAME}_ct${CW}"
@@ -44,15 +42,9 @@ run_one() {
     FLAGS="$FLAGS --kl_weight $KL --recon_weight $RW --dropout_prob $DP --lr $LR"
     FLAGS="$FLAGS --seed $SEED --log_interval 500"
     FLAGS="$FLAGS --mc_samples $MC"
-    if [ "$CW" != "0" ]; then
-        FLAGS="$FLAGS --contrastive_weight $CW"
-    fi
-    if [ "$LATENT" != "32" ]; then
-        FLAGS="$FLAGS --cvae_latent $LATENT"
-    fi
-    if [ "$HIDDEN" != "64" ]; then
-        FLAGS="$FLAGS --cvae_hidden $HIDDEN"
-    fi
+    [ "$CW" != "0" ] && FLAGS="$FLAGS --contrastive_weight $CW"
+    [ "$LATENT" != "32" ] && FLAGS="$FLAGS --cvae_latent $LATENT"
+    [ "$HIDDEN" != "64" ] && FLAGS="$FLAGS --cvae_hidden $HIDDEN"
     FLAGS="$FLAGS --name $CKPT"
 
     # Build record config
@@ -64,51 +56,32 @@ run_one() {
     [ "$HIDDEN" != "64" ] && RCONFIG="$RCONFIG --config=cvae_hidden=$HIDDEN"
     RCONFIG="$RCONFIG --config=mode=cvae --config=batch_size=$BS --config=epochs=$EPOCHS"
 
-    local CMD="echo '[$COUNT] \$(date +%H:%M:%S) ${NAME}  # ${DESC}' && \
+    local CMD="echo '[$COUNT/15] \$(date +%H:%M:%S) ${NAME}  # ${DESC}' && \
          PYTHONUNBUFFERED=1 /usr/bin/python3 train_cvae.py $FLAGS \
-           2>&1 | tee $LOG && \
+           > $LOG 2>&1 && \
          /usr/bin/python3 record_results.py $LOG $NAME $RCONFIG"
     CMDS+=("$CMD")
 }
 
 # ══════════════════════════════════════════════════════════
-# Block 0: Verification baselines (2 runs)
-# Reproduce old strategies with KL=0.1 to verify
+# Block 0.5 (remaining): KL=1.0 (1 run)
 # ══════════════════════════════════════════════════════════
-echo "Block 0: Verification baselines"
-# Contrastive baseline: reproduce old 0.584 result
-run_one 0.1 1.0 0.2 0.001 1 0.5 32 64 "verify old contrastive (kl=0.1 cw=0.5)"
-# MC baseline at KL=0.1
-run_one 0.1 1.0 0.2 0.001 5 0   32 64 "verify old MC at kl=0.1"
+echo "Block 0.5: KL Refinement (remaining: KL=1.0)"
+run_one 1.0 1.0 0.2 0.001 1 0 32 64 "KL refinement: kl=1.0"
 
 # ══════════════════════════════════════════════════════════
-# Block 0.5: KL Refinement — 画 β-U 曲线 (5 runs)
-# smart sweep 扫了 0.05/0.1/0.2/0.5，补上 0.3-1.0
-# 固定 rw=1.0, dp=0.2, lr=0.001
-# ══════════════════════════════════════════════════════════
-echo "Block 0.5: KL Refinement (0.3 → 1.0)"
-for KL in 0.3 0.4 0.6 0.8 1.0; do
-  run_one $KL 1.0 0.2 0.001 1 0 32 64 "KL refinement sweep"
-done
-
-# ══════════════════════════════════════════════════════════
-# Block 1: KL=0.5 + MC Inference (P0-1, 4 runs)
-# KL=0.5 base, sweep recon_weight + lr for MC combo
+# Block 1: KL=0.5 + MC Inference (4 runs)
 # ══════════════════════════════════════════════════════════
 echo "Block 1: KL=0.5 + MC (P0-1)"
-# Core: KL=0.5 + MC=5, two recon weights
 run_one 0.5 0.5 0.2 0.001 5 0 32 64 "KL0.5+MC5 rw=0.5"
 run_one 0.5 1.0 0.2 0.001 5 0 32 64 "KL0.5+MC5 rw=1.0"
-# Also test higher lr (MC v2 used lr=0.002)
 run_one 0.5 0.5 0.2 0.002 5 0 32 64 "KL0.5+MC5 rw=0.5 lr=0.002"
 run_one 0.5 1.0 0.2 0.002 5 0 32 64 "KL0.5+MC5 rw=1.0 lr=0.002"
 
 # ══════════════════════════════════════════════════════════
-# Block 2: KL=0.5 + Contrastive (P0-2, 6-8 runs)
-# Sweep contrastive_weight × recon_weight at KL=0.5
+# Block 2: KL=0.5 + Contrastive (6 runs)
 # ══════════════════════════════════════════════════════════
 echo "Block 2: KL=0.5 + Contrastive (P0-2)"
-# Core: KL=0.5 + Contrastive, scan contrastive weight
 for RW in 0.5 1.0; do
   for CW in 0.3 0.5 0.7; do
     run_one 0.5 $RW 0.2 0.001 1 $CW 32 64 "KL0.5+Contrast rw=$RW cw=$CW"
@@ -116,29 +89,26 @@ for RW in 0.5 1.0; do
 done
 
 # ══════════════════════════════════════════════════════════
-# Block 3: KL=0.5 + Contrastive + MC (P0-3, 2 runs)
-# Best contrastive weight (TBD from Block 2) + MC
-# Default: use cw=0.5 as initial guess
+# Block 3: KL=0.5 + Contrastive + MC (2 runs)
 # ══════════════════════════════════════════════════════════
 echo "Block 3: KL=0.5 + Contrastive + MC (P0-3)"
 run_one 0.5 0.5 0.2 0.001 5 0.5 32 64 "KL0.5+Contrast0.5+MC5 rw=0.5"
 run_one 0.5 1.0 0.2 0.001 5 0.5 32 64 "KL0.5+Contrast0.5+MC5 rw=1.0"
 
 # ══════════════════════════════════════════════════════════
-# Block 4: KL=0.5 + Capacity B (64/256) + MC (P1-1, 2 runs)
+# Block 4: KL=0.5 + Capacity B + MC (2 runs)
 # ══════════════════════════════════════════════════════════
 echo "Block 4: KL=0.5 + Capacity B + MC (P1-1)"
-run_one 0.5 0.5 0.2 0.001 5 0   64 256 "KL0.5+CapB+MC5 rw=0.5"
-run_one 0.5 1.0 0.2 0.001 5 0   64 256 "KL0.5+CapB+MC5 rw=1.0"
+run_one 0.5 0.5 0.2 0.001 5 0 64 256 "KL0.5+CapB+MC5 rw=0.5"
+run_one 0.5 1.0 0.2 0.001 5 0 64 256 "KL0.5+CapB+MC5 rw=1.0"
 
 TOTAL=${#CMDS[@]}
 echo ""
-echo "Total: $TOTAL combinations"
+echo "Total: $TOTAL combinations (15 remaining)"
+echo "Previously completed: kl0.3, kl0.4, kl0.6, kl0.8, old-ct0.5, old-mc5"
 echo ""
 
-# ─── Launch ───
-rm -f "$LOG_DIR"/*.txt
-
+# ─── Launch (keep existing logs) ───
 RUNNING=0
 for i in "${!CMDS[@]}"; do
   if [ $RUNNING -ge $N_PARALLEL ]; then
@@ -153,5 +123,4 @@ wait
 echo ""
 echo "============================================================"
 echo "ALL $TOTAL COMBO JOBS COMPLETED at $(date)"
-echo "Run: python3 summarize_sweep.py --dir results/ --prefix combo_"
 echo "============================================================"

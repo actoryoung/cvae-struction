@@ -21,7 +21,7 @@ def setup_seed(seed):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", default="cvae", choices=["cvae", "concat", "attn_cvae"])
+    p.add_argument("--mode", default="cvae", choices=["cvae", "concat", "attn_cvae", "mult"])
     p.add_argument("--datapath", required=True)
     p.add_argument("--use_pt", action="store_true", help="Use preprocessed .pt files (faster, less memory)")
     p.add_argument("--dataset", default="mosei")
@@ -286,7 +286,10 @@ def main():
         proj_dims = proj_dims[:len(orig_dim)]
     print(f"Proj dims: {proj_dims}")
 
-    if args.mode == 'attn_cvae':
+    if args.mode == 'mult':
+        from models.mult import MulT
+        model = MulT(orig_dim=orig_dim, proj_dim=proj_dims[0], out_dropout=args.dropout_prob)
+    elif args.mode == 'attn_cvae':
         from models.cvae_reconstruct import CVAEMSA_Attn
         model = CVAEMSA_Attn(orig_dim=orig_dim, proj_dims=proj_dims)
     else:

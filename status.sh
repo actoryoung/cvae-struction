@@ -8,44 +8,72 @@ RUNNING=$(ps aux | grep train_cvae | grep -v grep | wc -l)
 echo "=== Training @ $NOW (${RUNNING} processes) ==="
 echo ""
 
-show_sweep() {
-  local DIR=$1 LABEL=$2
-  local DONE=$(grep -l 'FINAL TEST' ${DIR}/*.txt 2>/dev/null | wc -l)
-  local TOTAL=$(ls ${DIR}/*.txt 2>/dev/null | wc -l)
-  local RUNNING=$(grep -L 'FINAL TEST' ${DIR}/*.txt 2>/dev/null | wc -l)
+python3 << 'PYEOF'
+import glob, re, os
 
-  if [ $TOTAL -eq 0 ]; then return; fi
+def parse_log(fpath):
+    with open(fpath) as f:
+        content = f.read()
+    has_final = "FINAL TEST" in content
 
-  echo "── ${LABEL} (${DONE}/${TOTAL} done) ──"
+    # Extract metrics
+    fl_match = re.search(r'\[Full\].*?Accuracy:\s+([\d.]+)', content, re.DOTALL)
+    mt_match = re.search(r'Missing text.*?Accuracy:\s+([\d.]+)', content, re.DOTALL)
+    fl = float(fl_match.group(1)) if fl_match else None
+    mt = float(mt_match.group(1)) if mt_match else None
 
-  if [ $RUNNING -gt 0 ]; then
-    for f in $(ls -t ${DIR}/*.txt 2>/dev/null); do
-      if grep -q 'FINAL TEST' "$f" 2>/dev/null; then continue; fi
-      name=$(basename "$f" .txt)
-      ep=$(grep -oP 'Epoch\s+\d+' "$f" 2>/dev/null | tail -1 | awk '{print $2}')
-      vl=$(grep -oP 'Val L1\s+([\d.]+)' "$f" 2>/dev/null | tail -1 | awk '{print $3}')
-      printf "  %-50s epoch %2s/30  ValL1=%s\n" "$name" "$ep" "$vl"
-    done
-  else
-    # All done — show top 3 by MissT
-    for f in $(grep -l 'FINAL TEST' ${DIR}/*.txt 2>/dev/null); do
-      name=$(basename "$f" .txt)
-      mt=$(grep -A 10 "Missing text" "$f" | grep "Accuracy:" | head -1 | awk '{print $2}')
-      fl=$(grep -A 10 "\[Full\]" "$f" | grep "Accuracy:" | head -1 | awk '{print $2}')
-      echo "  ${name}=${mt}" >> /tmp/.sweep_sort_$$
-    done
-    echo "  (all done, top MissT:)"
-    sort -t'=' -k2 -rn /tmp/.sweep_sort_$$ 2>/dev/null | head -3 | while IFS='=' read name mt; do
-      printf "    %-48s MissT=%s\n" "$name" "$mt"
-    done
-    rm -f /tmp/.sweep_sort_$$
-  fi
-  echo ""
-}
+    # Current epoch
+    eps = re.findall(r'Epoch\s+(\d+)\s+\|', content)
+    vls = re.findall(r'Val L1\s+([\d.]+)', content)
+    ep = eps[-1] if eps else None
+    vl = vls[-1] if vls else None
 
-show_sweep "/tmp/sweep_grid" "Smart Sweep"
-show_sweep "/tmp/combo_sweep" "Combo Sweep"
+    return has_final, fl, mt, ep, vl
 
-if [ $RUNNING -eq 0 ]; then
-  echo "No training running. Start: bash combo_sweep.sh"
-fi
+def show_sweep(directory, label):
+    pattern = os.path.join(directory, "*.txt")
+    files = sorted(glob.glob(pattern))
+    if not files:
+        return
+
+    done = []
+    running = []
+    for f in files:
+        name = os.path.basename(f).replace(".txt", "")
+        has_final, fl, mt, ep, vl = parse_log(f)
+        if has_final:
+            done.append((mt or 0, name, fl or 0))
+        else:
+            running.append((name, ep, vl))
+
+    total = len(files)
+    print(f"── {label} ({len(done)}/{total} done) ──")
+
+    # Completed: sort by MissT descending
+    for mt, name, fl in sorted(done, key=lambda x: -x[0]):
+        print(f"  ✅ {name:<50s} Full={fl:.4f}  MissT={mt:.4f}")
+
+    # Running
+    if running:
+        if done:
+            print("")
+        for name, ep, vl in sorted(running, key=lambda x: x[0]):
+            ep_str = f"{ep:>2s}" if ep else " ?"
+            vl_str = f"{vl}" if vl else "?"
+            print(f"  🔄 {name:<50s} epoch {ep_str}/30  ValL1={vl_str}")
+
+    print("")
+
+show_sweep("/tmp/multi_seed", "Multi-Seed (seeds 20260113, 20040169)")
+show_sweep("/tmp/mosi_test", "MOSI Test")
+show_sweep("/tmp/mosi_kl", "MOSI KL")
+import subprocess
+try:
+    out = subprocess.check_output(["ps", "aux"], text=True)
+    running = len([l for l in out.split('\n') if 'train_cvae' in l and 'grep' not in l])
+except:
+    running = 0
+
+if running == 0:
+    print("No training running. Start: bash combo_sweep.sh")
+PYEOF
