@@ -212,12 +212,12 @@ Table 1 presents the MOSEI results aggregated across three random seeds. CVAE-MS
 
 | Method | Full Acc-2 | MissT Acc-2 | MissA Acc-2 | MissV Acc-2 |
 |--------|:--:|:--:|:--:|:--:|
-| Concat (CASP) | 0.750 ± 0.005 | 0.569 ± 0.015 | — | — |
-| CVAE β=0.4 | 0.752 ± 0.004 | 0.578 ± 0.012 | — | — |
-| **CVAE β=0.8** | **0.753 ± 0.001** | **0.586 ± 0.006** | **0.756 ± 0.003** | **0.745 ± 0.005** |
-| CVAE β=0.4+CT0.7 | 0.750 ± 0.002 | 0.553 ± 0.033 | — | — |
+| Concat (CASP) | 0.750 ± 0.005 | 0.569 ± 0.015 | 0.747 ± 0.004 | 0.748 ± 0.006 |
+| CVAE β=0.4 | 0.752 ± 0.004 | 0.578 ± 0.012 | 0.752 ± 0.004 | 0.747 ± 0.002 |
+| **CVAE β=0.8** | **0.753 ± 0.001** | **0.586 ± 0.006** | **0.754 ± 0.001** | **0.746 ± 0.001** |
+| CVAE β=0.4+CT0.7 | 0.750 ± 0.002 | 0.553 ± 0.033 | 0.749 ± 0.002 | 0.743 ± 0.002 |
 
-*Table 1: MOSEI test results (mean ± std, 3 seeds). CVAE β=0.8 is the recommended configuration: highest MissT mean with the lowest standard deviation. MissA/MissV shown for the best configuration only.*
+*Table 1: MOSEI test results (mean ± std, 3 seeds). CVAE β=0.8 is recommended: highest MissT mean with lowest variance across all metrics.*
 
 Two findings merit emphasis. First, CVAE β=0.8 improves over concat by 1.7pp in MissT while achieving the lowest standard deviation (0.006)—an order of magnitude tighter than concat (0.015)—indicating highly reliable optimization. Second, CVAE β=0.4+Contrastive0.7 shows a large standard deviation (±0.033), with performance ranging from 0.518 to 0.597 across seeds. While this configuration achieves the best single-seed result, its instability makes it unsuitable as a primary recommendation. The contrastive loss appears to introduce optimization sensitivity to random initialization.
 
