@@ -270,23 +270,13 @@ To understand the upper bound of reconstruction quality, we regress sentiment la
 
 Audio and vision carry **no independent sentiment signal** in classical features. When text is missing, the CVAE must reconstruct a sentiment-bearing representation from inputs that are sentiment-free. This explains three empirical patterns: (a) the MissT gap between Full (0.753) and MissT (0.586) is irreducible under current features; (b) scaling up CVAE capacity does not help—the bottleneck is input information, not model size; and (c) strategy stacking provides diminishing returns—additional training signals cannot create information that does not exist in the inputs.
 
-### 5.5 Parameter Efficiency and Cross-Dataset Summary
+### 5.5 Parameter Efficiency and KL×Recon Interaction
 
-Table 3 summarizes the key configurations across both datasets. CVAE-MSA adds only 30K parameters (8.8% overhead) to the CASP encoder backbone. On MOSEI, the pure CVAE with β=0.8 achieves the best reliability-performance trade-off: 0.586 MissT (+1.7pp over concat) with the lowest variance of any configuration (±0.006). On MOSI, CVAE improves Full, MissA, and MissV across all β configurations, but MissT consistently underperforms concat—the gap widens with increasing β (from −6.7pp at β=0.001 to −19.0pp at β=0.8).
-
-| Dataset | Method | Params | Full Acc-2 | MissT Acc-2 | MissA Acc-2 | MissV Acc-2 |
-|---------|--------|:--:|:--:|:--:|:--:|:--:|
-| MOSEI | Concat (CASP) | 347K | 0.750 ± .005 | 0.569 ± .015 | 0.747 ± .004 | 0.748 ± .006 |
-| MOSEI | **CVAE β=0.8 (Ours)** | 378K | **0.753 ± .001** | **0.586 ± .006** | **0.754 ± .001** | **0.746 ± .001** |
-| MOSEI | CVAE β=0.4+CT0.7 | 458K | 0.750 ± .002 | 0.553 ± .033 | 0.749 ± .002 | 0.743 ± .002 |
-| MOSI | Concat (CASP) | 347K | 0.780 ± .009 | **0.591 ± .011** | 0.777 ± .008 | 0.776 ± .008 |
-| MOSI | CVAE β=0.001 (Ours) | 378K | **0.790 ± .010** | 0.524 ± .031 | **0.786 ± .008** | **0.788 ± .011** |
-
-*Table 3: Cross-dataset summary (mean ± std, 3 seeds). CVAE-MSA adds 30K params (+8.8%) to the CASP backbone. Bold indicates best per dataset per metric. On MOSEI, CVAE β=0.8 surpasses concat on all four settings. On MOSI, CVAE β=0.001 improves Full/MissA/MissV but trails on MissT.*
+CVAE-MSA adds only 30K parameters to the 347K CASP encoder backbone—an 8.8% overhead, substantially smaller than prior generative methods that require separate VAEs per modality (P-RMF) or diffusion decoders (HVDER). The parameter count is independent of the input feature dimensionality, since reconstruction occurs in the fixed 40-dimensional fusion space.
 
 ![Figure 5: KL × Reconstruction Weight interaction — heatmap and line plot](figures/fig5_kl_recon_interaction.png)
 
-The KL×Recon interaction (Figure 5) reveals a systematic pattern: at low KL, lower reconstruction weight (λ=0.5) is preferable, as weak regularization causes reconstruction to overfit spurious correlations. At high KL, medium reconstruction weight (λ=1.0) becomes optimal—strong regularization ensures the reconstruction target is meaningful, allowing the model to benefit from higher reconstruction pressure.
+Figure 5 examines the interaction between KL weight (β) and reconstruction weight (λ), a secondary hyperparameter. The heatmap reveals a systematic pattern: at low β, lower λ is preferable—weak KL regularization fails to constrain the latent space, and stronger reconstruction pressure causes the CVAE to overfit spurious correlations in the available modalities. At high β (≥0.4), the well-regularized latent space enables the model to benefit from stronger reconstruction supervision: λ=1.0 becomes optimal, while λ=0.5 underfits the reconstruction target. This interaction provides further evidence that KL weight is the primary hyperparameter—it determines the regime within which other hyperparameters operate—reinforcing the variance decomposition results (Figure 3).
 
 ---
 
