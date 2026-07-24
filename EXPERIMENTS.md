@@ -363,3 +363,52 @@ model.load_state_dict(torch.load('checkpoints/mosei_cvae.pt'))
 | 6 | Capacity C (128/128) | 0.513 | -1.2pp 🔴 | 容量 |
 | 11 | Fix1 T-dropout (td=0.3) | 0.516 | -0.9pp 🔴 | 训练 |
 | 13 | Fix3 Combined | 0.489 | -3.6pp 🔴 | 训练 |
+
+---
+
+## 十八、外部基线对比实验（2026-07-24）
+
+> 三个外部基线方法在相同 CASP 编码器骨架 + 经典特征 (GloVe/COVAREP/FACET) + MOSEI 数据集上的对比。
+> 每方法 3 seeds (666, 20260113, 20040169)，30 epochs，batch=32，与我们的 DetMLP/CVAE 完全可比。
+
+### 18.1 完整结果
+
+| Method | Full Acc-2 | MissT Acc-2 | MissA Acc-2 | MissV Acc-2 | Params |
+|--------|:---:|:---:|:---:|:---:|:--:|
+| **TMDC (AAAI 2026)** | 0.754 ± 0.002 | **0.586 ± 0.007** | 0.755 ± 0.001 | 0.741 ± 0.008 | 367K |
+| **GMD (AAAI 2024)** | 0.750 ± 0.005 | 0.581 ± 0.019 | 0.749 ± 0.004 | 0.744 ± 0.006 | 348K |
+| **MissModal (TACL 2023)** | 0.755 ± 0.003 | 0.516 ± 0.008 | 0.755 ± 0.001 | 0.747 ± 0.003 | 364K |
+
+*Note: T2DR (ACL 2025) was also re-implemented but removed from comparison because its original paper uses BERT-based features; our GloVe-based re-implementation under-represents its true capability. See §18.2.*
+
+| (our methods) | | | | | |
+| **DetMLP (ours)** | 0.755 ± 0.006 | **0.588 ± 0.015** | 0.753 ± 0.005 | 0.751 ± 0.002 | 360K |
+| **CVAE β=0.8 (ours)** | 0.754 ± 0.005 | 0.586 ± 0.006 | 0.753 ± 0.005 | 0.752 ± 0.004 | 378K |
+| **RawMLP (ours)** | 0.750 ± 0.006 | 0.576 ± 0.008 | 0.751 ± 0.006 | 0.748 ± 0.008 | 629K |
+| **Concat (CASP)** | 0.751 ± 0.005 | 0.560 ± 0.011 | 0.748 ± 0.005 | 0.751 ± 0.005 | 347K |
+
+### 18.2 关键发现
+
+1. **TMDC -0.002 MissT vs DetMLP**：TMDC 的 MissT (0.586) 略低于 DetMLP (0.588)，差异在 1σ 以内（DetMLP σ=0.015），统计学不显著。DetMLP 以 12K 参数（vs TMDC 19K，1.6×）实现了相当的文本缺失鲁棒性。
+
+2. **GMD 方差最大 (±0.019)**：GMD 的均值 (0.581) 优于 Concat (+2.1pp) 但不如 DetMLP (-0.7pp)，且跨 seed 方差是 DetMLP 的 1.3 倍。Multi-combo 训练提供了模态缺失鲁棒性，但缺少主动重建机制限制了上限。
+
+3. **TMDC 方差最低（外部方法）(±0.007)**：两阶段去噪+补全的 MissT (0.586) 与 DetMLP (0.588) 相当，但使用 1.6× 参数 (19K vs 12K)。TMDC 的跨模态公共去噪器 + 互补模块表现稳定，验证了"公共表示→缺失补全"思路的有效性。
+
+4. **MissModal 不如 Concat (-4.4pp)**：表示对齐损失在缺失文本时有害。根因：零填充文本 + 对齐训练不能恢复缺失信息。
+
+5. **方法论光谱**：对齐 (MissModal 0.516) < 零填充 (Concat 0.560) < 梯度解耦 (GMD 0.581) < 去噪补全 (TMDC 0.586) < 融合空间重建 (DetMLP 0.588)。**主动重建/补全 > 被动容忍**，融合空间重建以最低参数成本达到接近最优效果。
+
+6. **所有方法在 MissA/MissV 上差异极小**（<0.01），再次验证文本主导效应。
+
+### 18.3 与论文 Table A 对照
+
+| 方法 | 类型 | 重建空间 | 参数量 (重建部分) |
+|------|------|------|:--:|
+| Zero-filling (Concat) | 被动 | — | 0 |
+| **MissModal** | 表示对齐 | — | 13K (contrast head) |
+| **GMD** | 梯度解耦+多组合训练 | — | 0 |
+| **TMDC** | 去噪+补全 | 40d 共享空间 | 19K (Denoiser+Complement) |
+| **DetMLP (ours)** | **融合空间 MLP** | **40d 融合空间** | **12K** |
+| **CVAE (ours)** | 融合空间 VAE | 40d 融合空间 | 30K |
+| RawMLP (ours) | 原始特征空间 MLP | 768d 原始空间 | 282K |

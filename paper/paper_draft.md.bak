@@ -70,26 +70,26 @@ The VAE (Kingma and Welling, ICLR 2014) provides a principled framework for late
 
 ### 3.1 Problem Formulation
 
-Let $x = \{x_T, x_A, x_V\}$ denote the three modalities: text, audio, and vision. Each modality $x_m \in \mathbb{R}^{L \times d_m^{\text{raw}}}$ is a sequence of $L$ time-aligned feature vectors, where $d_T^{\text{raw}}=768$ (GloVe), $d_A^{\text{raw}}=25$ (COVAREP), and $d_V^{\text{raw}}=171$ (FACET). Each sample has a sentiment label $y \in \mathbb{R}$ (regression) with derived binary classification (positive/negative) as the primary evaluation metric.
+Let $x = \\{x_T, x_A, x_V\\}$ denote the three modalities: text, audio, and vision. Each modality $x_m \\in \\mathbb{R}^{L \\times d_m^{\\text{raw}}}$ is a sequence of $L$ time-aligned feature vectors, where $d_T^{\\text{raw}}=768$ (GloVe), $d_A^{\\text{raw}}=25$ (COVAREP), and $d_V^{\\text{raw}}=171$ (FACET). Each sample has a sentiment label $y \\in \\mathbb{R}$ (regression) with derived binary classification (positive/negative) as the primary evaluation metric.
 
 The standard MSA pipeline consists of three stages:
 
 **Stage 1 — Modality Encoding.** Each modality is independently projected to a common dimensionality and encoded through a modality-specific Transformer:
 
-$$h_m = \text{Enc}_m(x_m) = \text{Transformer}_m(\text{Conv1d}(x_m; d_m^{\text{raw}} \to 40)) \in \mathbb{R}^{40}, \quad m \in \{T, A, V\}$$
+$$h_m = \\text{Enc}_m(x_m) = \\text{Transformer}_m(\\text{Conv1d}(x_m; d_m^{\\text{raw}} \\to 40)) \\in \\mathbb{R}^{40}, \\quad m \\in \\{T, A, V\\}$$
 
 The three encoders are identical in architecture (5 layers, 8 attention heads, 40-dim embeddings) but have separate parameters. This symmetric design ensures that all modalities are projected to a shared representational space.
 
 **Stage 2 — Fusion.** The modality embeddings are concatenated:
 
-$$h_{\text{fusion}} = [h_T; h_A; h_V] \in \mathbb{R}^{120}$$
+$$h_{\\text{fusion}} = [h_T; h_A; h_V] \\in \\mathbb{R}^{120}$$
 
 **Stage 3 — Prediction.** A lightweight output head maps the fused representation to a sentiment score:
 
-$$\hat{y} = \text{Head}(h_{\text{fusion}}) = W_3 \cdot \sigma(W_2 \cdot \text{Dropout}(\sigma(W_1 \cdot h_{\text{fusion}} + b_1)) + b_2) + b_3$$
-where $W_1 \in \mathbb{R}^{80 \times 120}$, $W_2 \in \mathbb{R}^{40 \times 80}$, $W_3 \in \mathbb{R}^{1 \times 40}$, and $\sigma$ denotes ReLU activation.
+$$\\hat{y} = \\text{Head}(h_{\\text{fusion}}) = W_3 \\cdot \\sigma(W_2 \\cdot \\text{Dropout}(\\sigma(W_1 \\cdot h_{\\text{fusion}} + b_1)) + b_2) + b_3$$
+where $W_1 \\in \\mathbb{R}^{80 \\times 120}$, $W_2 \\in \\mathbb{R}^{40 \\times 80}$, $W_3 \\in \\mathbb{R}^{1 \\times 40}$, and $\\sigma$ denotes ReLU activation.
 
-**Missing modality scenario.** When modality $m$ is missing at test time ($x_m = \emptyset$), the standard baseline sets $h_m = \mathbf{0}$. Our method generates a reconstruction $\hat{h}_m$ using the available modalities.
+**Missing modality scenario.** When modality $m$ is missing at test time ($x_m = \\emptyset$), the standard baseline sets $h_m = \\mathbf{0}$. Our method generates a reconstruction $\\hat{h}_m$ using the available modalities.
 
 ### 3.2 Why Reconstruction in Fusion Space?
 
@@ -107,54 +107,54 @@ Prior work (P-RMF, HVDER) operates in raw feature space, where input (audio 25d 
 
 Two instantiations of fusion-space reconstruction are tested, differing in whether they include a probabilistic latent variable.
 
-**CVAE Reconstructor.** A lightweight Conditional VAE reconstructs $h_m^{\text{missing}}$ from the available modalities' fusion embeddings. It has three components:
+**CVAE Reconstructor.** A lightweight Conditional VAE reconstructs $h_m^{\\text{missing}}$ from the available modalities' fusion embeddings. It has three components:
 
-**Encoder (Posterior, training only).** The ground-truth $h_m^{\text{true}}$ is available during training via teacher forcing. The encoder maps the concatenation of available context and the target embedding to a latent Gaussian:
+**Encoder (Posterior, training only).** The ground-truth $h_m^{\\text{true}}$ is available during training via teacher forcing. The encoder maps the concatenation of available context and the target embedding to a latent Gaussian:
 
-$$q_\phi(z | h_{\text{avail}}, h_m^{\text{true}}) = \mathcal{N}(\mu_\phi, \sigma_\phi^2 I)$$
+$$q_\\phi(z | h_{\\text{avail}}, h_m^{\\text{true}}) = \\mathcal{N}(\\mu_\\phi, \\sigma_\\phi^2 I)$$
 
-$$[\mu_\phi, \log\sigma_\phi^2] = \text{MLP}_{\text{enc}}([h_{\text{avail}}; h_m^{\text{true}}])$$
+$$[\\mu_\\phi, \\log\\sigma_\\phi^2] = \\text{MLP}_{\\text{enc}}([h_{\\text{avail}}; h_m^{\\text{true}}])$$
 
-where $h_{\text{avail}} \in \mathbb{R}^{80}$ concatenates two available modalities' 40d embeddings. The encoder MLP is $120 \to 64 \to 64$ with ReLU, followed by separate linear heads for $\mu$ (32d) and $\log\sigma^2$ (32d).
+where $h_{\\text{avail}} \\in \\mathbb{R}^{80}$ concatenates two available modalities' 40d embeddings. The encoder MLP is $120 \\to 64 \\to 64$ with ReLU, followed by separate linear heads for $\\mu$ (32d) and $\\log\\sigma^2$ (32d).
 
 **Decoder (Likelihood).** The decoder reconstructs the missing representation from a latent sample $z$ and the available context:
 
-$$p_\theta(h_m | z, h_{\text{avail}}) = \text{MLP}_{\text{dec}}([z; h_{\text{avail}}])$$
+$$p_\\theta(h_m | z, h_{\\text{avail}}) = \\text{MLP}_{\\text{dec}}([z; h_{\\text{avail}}])$$
 
-The decoder MLP is $72 \to 64 \to 64 \to 40$ with ReLU. At test time the ground-truth $h_m^{\text{true}}$ is unavailable, so the prior mean $z = \mathbf{0}$ is used (deterministic inference). MC sampling ($z \sim \mathcal{N}(0,I)$, averaging $K$ samples) provides modest gains at low KL but becomes redundant at the optimal KL regime (Section 5.3).
+The decoder MLP is $72 \\to 64 \\to 64 \\to 40$ with ReLU. At test time the ground-truth $h_m^{\\text{true}}$ is unavailable, so the prior mean $z = \\mathbf{0}$ is used (deterministic inference). MC sampling ($z \\sim \\mathcal{N}(0,I)$, averaging $K$ samples) provides modest gains at low KL but becomes redundant at the optimal KL regime (Section 5.3).
 
-**Deterministic MLP Reconstructor (DetMLP).** To test whether the VAE framework is necessary, a simpler alternative is implemented: a three-layer MLP that directly maps $h_{\text{avail}}$ to $h_m^{\text{recon}}$ with no encoder, latent variables, or KL term:
+**Deterministic MLP Reconstructor (DetMLP).** To test whether the VAE framework is necessary, a simpler alternative is implemented: a three-layer MLP that directly maps $h_{\\text{avail}}$ to $h_m^{\\text{recon}}$ with no encoder, latent variables, or KL term:
 
-$$\hat{h}_m = \text{MLP}_{\text{det}}(h_{\text{avail}}) = W_3 \cdot \sigma(W_2 \cdot \sigma(W_1 \cdot h_{\text{avail}} + b_1) + b_2) + b_3$$
-where $W_1 \in \mathbb{R}^{64 \times 80}$, $W_2 \in \mathbb{R}^{64 \times 64}$, $W_3 \in \mathbb{R}^{40 \times 64}$, and $\sigma$ is ReLU.
+$$\\hat{h}_m = \\text{MLP}_{\\text{det}}(h_{\\text{avail}}) = W_3 \\cdot \\sigma(W_2 \\cdot \\sigma(W_1 \\cdot h_{\\text{avail}} + b_1) + b_2) + b_3$$
+where $W_1 \\in \\mathbb{R}^{64 \\times 80}$, $W_2 \\in \\mathbb{R}^{64 \\times 64}$, $W_3 \\in \\mathbb{R}^{40 \\times 64}$, and $\\sigma$ is ReLU.
 
 DetMLP has 12K parameters—2.5× fewer than the CVAE reconstructor (30K). It is trained with the same regression and MSE reconstruction losses as CVAE, minus the KL term. Both CVAE and DetMLP share the identical encoder backbone and output head; only the reconstructor module differs, giving a controlled ablation of the VAE framework.
 
-Both reconstructors operate on the same fusion-space representations: they receive the same input ($h_{\text{avail}}$, an 80d concatenation of available modalities) and produce the same output ($\hat{h}_m$, 40d). They are trained end-to-end with the modality encoders; all 360–378K parameters are jointly optimized.
+Both reconstructors operate on the same fusion-space representations: they receive the same input ($h_{\\text{avail}}$, an 80d concatenation of available modalities) and produce the same output ($\\hat{h}_m$, 40d). They are trained end-to-end with the modality encoders; all 360–378K parameters are jointly optimized.
 
 ### 3.4 Training Objective
 
 **CVAE Loss.** The CVAE training loss combines four terms:
 
 $$
-\begin{aligned}
-\mathcal{L}_{\text{CVAE}} = &\; \mathcal{L}_{\text{reg}}(y, \hat{y}_{\text{full}}) \\
-+ &\; \mathcal{L}_{\text{reg}}(y, \hat{y}_{\text{drop}}) \\
-+ &\; \beta \cdot D_{KL}\big(q_\phi(z|h_{\text{avail}}, h_m^{\text{true}}) \;\parallel\; \mathcal{N}(0,I)\big) \\
-+ &\; \lambda \cdot \|\hat{h}_m - h_m^{\text{true}}\|_2^2
-\end{aligned}
+\\begin{aligned}
+\\mathcal{L}_{\\text{CVAE}} = &\\; \\mathcal{L}_{\\text{reg}}(y, \\hat{y}_{\\text{full}}) \\\\
++ &\\; \\mathcal{L}_{\\text{reg}}(y, \\hat{y}_{\\text{drop}}) \\\\
++ &\\; \\beta \\cdot D_{KL}\\big(q_\\phi(z|h_{\\text{avail}}, h_m^{\\text{true}}) \\;\\parallel\\; \\mathcal{N}(0,I)\\big) \\\\
++ &\\; \\lambda \\cdot \\|\\hat{h}_m - h_m^{\\text{true}}\\|_2^2
+\\end{aligned}
 $$
 
-where $\mathcal{L}_{\text{reg}}$ is L1 loss on the full-modality prediction (first term) and the modality-dropped prediction (second term), $\beta$ is the KL weight, and $\lambda$ is the reconstruction weight.
+where $\\mathcal{L}_{\\text{reg}}$ is L1 loss on the full-modality prediction (first term) and the modality-dropped prediction (second term), $\\beta$ is the KL weight, and $\\lambda$ is the reconstruction weight.
 
 **DetMLP Loss.** DetMLP drops the KL term:
 
 $$
-\mathcal{L}_{\text{DetMLP}} = \mathcal{L}_{\text{reg}}(y, \hat{y}_{\text{full}}) + \mathcal{L}_{\text{reg}}(y, \hat{y}_{\text{drop}}) + \lambda \cdot \|\hat{h}_m - h_m^{\text{true}}\|_2^2
+\\mathcal{L}_{\\text{DetMLP}} = \\mathcal{L}_{\\text{reg}}(y, \\hat{y}_{\\text{full}}) + \\mathcal{L}_{\\text{reg}}(y, \\hat{y}_{\\text{drop}}) + \\lambda \\cdot \\|\\hat{h}_m - h_m^{\\text{true}}\\|_2^2
 $$
-$\lambda$ is fixed at 1.0 based on the hyperparameter sweep.
+$\\lambda$ is fixed at 1.0 based on the hyperparameter sweep.
 
-**Training procedure.** One modality is uniformly sampled for dropping per batch ($\frac{1}{3}$ probability each). Its true embedding $h_m^{\text{true}}$ feeds the CVAE encoder via teacher forcing (when applicable), but is replaced by the reconstructed $\hat{h}_m$ in the fusion layer. Available modalities pass through unchanged. All parameters—encoders, reconstructor, output head—are jointly optimized. The encoders are not frozen; the "12–30K additional parameters" count refers to the reconstructor module only. The full model contains 360–378K parameters depending on variant.
+**Training procedure.** One modality is uniformly sampled for dropping per batch ($\\frac{1}{3}$ probability each). Its true embedding $h_m^{\\text{true}}$ feeds the CVAE encoder via teacher forcing (when applicable), but is replaced by the reconstructed $\\hat{h}_m$ in the fusion layer. Available modalities pass through unchanged. All parameters—encoders, reconstructor, output head—are jointly optimized. The encoders are not frozen; the "12–30K additional parameters" count refers to the reconstructor module only. The full model contains 360–378K parameters depending on variant.
 
 ### 3.5 Architecture Summary
 
@@ -190,9 +190,9 @@ Both datasets are standard MSA benchmarks with aligned multimodal sequences and 
 Following CASP (Guo et al., 2025), we evaluate under four modality-availability settings:
 
 - **Full**: All three modalities present
-- **Missing Text** ($\mathrm{Miss}_T$): $x_T \gets \mathbf{0}$
-- **Missing Audio** ($\mathrm{Miss}_A$): $x_A \gets \mathbf{0}$
-- **Missing Vision** ($\mathrm{Miss}_V$): $x_V \gets \mathbf{0}$
+- **Missing Text** ($\\mathrm{Miss}_T$): $x_T \\gets \\mathbf{0}$
+- **Missing Audio** ($\\mathrm{Miss}_A$): $x_A \\gets \\mathbf{0}$
+- **Missing Vision** ($\\mathrm{Miss}_V$): $x_V \\gets \\mathbf{0}$
 
 Primary metric: binary accuracy (Acc-2, positive vs. negative sentiment). Secondary metrics include F1 score and Mean Absolute Error (MAE). All main results are reported as mean ± standard deviation across three random seeds (666, 20260113, 20040169).
 
@@ -211,12 +211,12 @@ In the classical feature regime, passive fusion strategies hit a hard informatio
 
 ### 4.4 Implementation Details
 
-- **Optimizer**: Adam, learning rate $1 \times 10^{-3}$, ReduceLROnPlateau (patience=10, factor=0.1)
+- **Optimizer**: Adam, learning rate $1 \\times 10^{-3}$, ReduceLROnPlateau (patience=10, factor=0.1)
 - **Batch size**: 32
 - **Training epochs**: 30, best checkpoint selected by validation Acc-2
 - **Gradient clipping**: 0.8
-- **Modality dropout**: Uniform $\frac{1}{3}$ per modality during training
-- **Default hyperparameters**: $\beta = 0.1$, $\lambda = 1.0$, dropout = 0.2, latent_dim = 32
+- **Modality dropout**: Uniform $\\frac{1}{3}$ per modality during training
+- **Default hyperparameters**: $\\beta = 0.1$, $\\lambda = 1.0$, dropout = 0.2, latent_dim = 32
 - **Hardware**: NVIDIA RTX 4060 8GB, fp32 training
 - **Framework**: PyTorch 2.x, CUDA 12.8, based on CASP
 
@@ -280,7 +280,7 @@ Figure 1 plots the β-U curve on MOSEI. The curve has a dual-peak shape, with ma
 
 Variance decomposition (Figure 3) puts the point quantitatively: KL weight accounts for 63.3% of MissT variance, over three times the combined contribution of learning rate (18.5%), reconstruction weight (9.3%), and dropout (8.0%). If only one hyperparameter can be tuned, it should be KL weight—and the search should start from β ≥ 0.3, not the conventional β = 0.1.
 
-**Interpretation.** The β-U shape is consistent with a posterior collapse dynamic. At low β (< 0.2), the KL term is too weak to prevent the encoder from producing a near-deterministic mapping ($q_\phi(z|x) \approx \delta_{\mu(x)}$). The decoder learns to depend on this narrow latent distribution during training. At test time, when $z = 0$ is substituted, the decoder encounters samples from a fundamentally different distribution. At high β (≥ 0.4), the KL term pushes $q_\phi(z|x)$ toward $\mathcal{N}(0,I)$, placing the test-time $z = 0$ comfortably inside the decoder's training distribution. This accounts for both the performance jump and the lower variance at β = 0.8.
+**Interpretation.** The β-U shape is consistent with a posterior collapse dynamic. At low β (< 0.2), the KL term is too weak to prevent the encoder from producing a near-deterministic mapping ($q_\\phi(z|x) \\approx \\delta_{\\mu(x)}$). The decoder learns to depend on this narrow latent distribution during training. At test time, when $z = 0$ is substituted, the decoder encounters samples from a fundamentally different distribution. At high β (≥ 0.4), the KL term pushes $q_\\phi(z|x)$ toward $\\mathcal{N}(0,I)$, placing the test-time $z = 0$ comfortably inside the decoder's training distribution. This accounts for both the performance jump and the lower variance at β = 0.8.
 
 ### 5.3 Strategy Benefits Decay with KL
 
@@ -310,9 +310,7 @@ Audio and vision carry no independent sentiment signal in classical features. Wh
 
 Both reconstruction methods are substantially leaner than prior generative approaches. DetMLP adds 12K parameters (3.4% overhead) and CVAE-MSA adds 30K (8.8% overhead) to the 347K CASP encoder backbone. DetMLP's 12K reconstructor outperforms GMD (+0.007 MissT), TMDC (+0.002 MissT, with 1.6× more parameters), and MissModal (+0.072 MissT). Prior raw-space generative methods require separate heavy networks per modality: P-RMF uses three VAEs (~1.5M reconstructor parameters), MMIN uses cascaded autoencoders (~500K). Because reconstruction happens in a fixed 40d fusion space, the parameter count is independent of input feature dimensionality—a meaningful advantage if stronger extractors (e.g., BERT) are adopted.
 
-![Figure 5a: KL × Reconstruction Weight interaction heatmap — MissT Acc-2 across β ∈ {0.05, 0.1, 0.2, 0.5} and λ ∈ {0.5, 1.0, 2.0}. Cell values show mean MissT.](figures/fig5a_kl_recon_heatmap.png)
-
-![Figure 5b: MissT vs Reconstruction Weight λ, grouped by KL weight. The optimal configuration (β = 0.5, λ = 1.0) achieves MissT = 0.585. Dashed line marks the concat baseline.](figures/fig5b_kl_recon_lines.png)
+![Figure 5: KL × Reconstruction Weight interaction — heatmap and line plot](figures/fig5_kl_recon_interaction.png)
 
 Figure 5 examines the interaction between KL weight (β) and reconstruction weight (λ). At low β, lower λ is preferable: weak KL regularization leaves the latent space unconstrained, and stronger reconstruction pressure drives the CVAE to overfit spurious cross-modal correlations. At high β (≥ 0.4), the well-regularized latent space allows the model to exploit stronger reconstruction supervision—λ = 1.0 becomes optimal, while λ = 0.5 underfits. This interaction reinforces the variance decomposition result: KL weight defines the regime in which other hyperparameters operate.
 
@@ -338,7 +336,7 @@ Three controlled ablations isolate the contribution of each component. Table 3 s
 
 **Reconstruction loss.** Training CVAE without reconstruction (KL + regression only) drops MissT by 0.034 and inflates variance to ±0.033—five times larger than CVAE β = 0.8. The reconstruction auxiliary task, not KL regularization, is the primary mechanism. Reconstruction alone (DetMLP) achieves the best performance; KL alone provides no benefit and introduces instability.
 
-From a mutual-information perspective, the fusion representation $h_m = \text{Enc}_m(x_m)$ is optimized for sentiment prediction. Raw features contain both task-relevant and task-irrelevant variation; the encoder filters out low-level artifacts (acoustic noise, visual background) and retains semantic content. The conditional mutual information $I(h_T; h_A, h_V \mid y)$ in fusion space is therefore higher than $I(x_T^{\text{raw}}; x_A, x_V \mid y)$ in raw space—more task-relevant cross-modal signal is available to exploit. The reconstruction MSE acts as a multi-task regularizer: it forces the available-modality encoders to extract features predictive of the missing modality's fusion representation, which are more likely to be sentiment-relevant. From a self-supervised perspective, the reconstruction task supplies a dense 40-dimensional regression signal that complements the sparse scalar sentiment label, reducing overfitting. KL regularization further constrains the latent space, preventing the reconstructor from latching onto spurious cross-modal correlations that fail to generalize across seeds—hence the lower variance.
+From a mutual-information perspective, the fusion representation $h_m = \\text{Enc}_m(x_m)$ is optimized for sentiment prediction. Raw features contain both task-relevant and task-irrelevant variation; the encoder filters out low-level artifacts (acoustic noise, visual background) and retains semantic content. The conditional mutual information $I(h_T; h_A, h_V \\mid y)$ in fusion space is therefore higher than $I(x_T^{\\text{raw}}; x_A, x_V \\mid y)$ in raw space—more task-relevant cross-modal signal is available to exploit. The reconstruction MSE acts as a multi-task regularizer: it forces the available-modality encoders to extract features predictive of the missing modality's fusion representation, which are more likely to be sentiment-relevant. From a self-supervised perspective, the reconstruction task supplies a dense 40-dimensional regression signal that complements the sparse scalar sentiment label, reducing overfitting. KL regularization further constrains the latent space, preventing the reconstructor from latching onto spurious cross-modal correlations that fail to generalize across seeds—hence the lower variance.
 
 ---
 

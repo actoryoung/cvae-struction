@@ -21,7 +21,7 @@ def setup_seed(seed):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--mode", default="cvae", choices=["cvae", "concat", "attn_cvae", "mult"])
+    p.add_argument("--mode", default="cvae", choices=["cvae", "concat", "attn_cvae", "mult", "det_mlp", "raw_mlp"])
     p.add_argument("--datapath", required=True)
     p.add_argument("--use_pt", action="store_true", help="Use preprocessed .pt files (faster, less memory)")
     p.add_argument("--dataset", default="mosei")
@@ -63,6 +63,8 @@ def parse_args():
     p.add_argument("--cycle_weight", type=float, default=0.0, help="Cycle consistency loss weight")
     # Multi-sample inference
     p.add_argument("--mc_samples", type=int, default=1, help="MC samples at inference (1=deterministic)")
+    # Subsampling for dataset-scale experiments
+    p.add_argument("--subset_size", type=int, default=0, help="If >0, randomly subsample train set to N samples")
     # Output
     p.add_argument("--name", default="cvae_model.pt")
     p.add_argument("--log_interval", type=int, default=200)
@@ -127,46 +129,54 @@ def train_epoch(model, optimizer, train_loader, args, epoch, fp16=False, recon_w
         model.zero_grad(set_to_none=True)
         x = [text, audio, vision]
 
-        if args.mode in ['cvae', 'attn_cvae']:
+        if args.mode in ['cvae', 'attn_cvae', 'det_mlp', 'raw_mlp']:
+            is_prob = args.mode in ['cvae', 'attn_cvae']
+
             # Main forward (full + dropout)
             output_full, _ = model(x)
             loss_reg = l1(output_full, labels)
 
             drop_idx = random.choices([0, 1, 2], weights=drop_probs)[0] if drop_probs else random.randint(0, 2)
-            output_drop, h_recon, h_true, mu, logvar, h_avail = model.forward_with_dropout(x, drop_idx)
+            fwd_result = model.forward_with_dropout(x, drop_idx)
+
+            if is_prob:
+                output_drop, h_recon, h_true, mu, logvar, h_avail = fwd_result
+                loss_kl = kl_divergence(mu, logvar)
+            else:
+                output_drop, h_recon, h_true, h_avail = fwd_result
+                loss_kl = 0.0
+                mu, logvar = None, None  # prevent accidental use
 
             loss_reg_drop = l1(output_drop, labels)
-            loss_kl = kl_divergence(mu, logvar)
             # Weighted reconstruction: prioritize predictable dims
             if recon_weights is not None:
                 w = recon_weights[drop_idx].to(h_recon.device)
                 loss_recon = (w * (h_recon - h_true) ** 2).mean()
             else:
                 loss_recon = F.mse_loss(h_recon, h_true)
-            loss_l2 = args.l2_latent * (mu.pow(2).mean() + logvar.exp().mean()) if args.l2_latent > 0 else 0.0
+            loss_l2 = (args.l2_latent * (mu.pow(2).mean() + logvar.exp().mean())
+                       if (is_prob and args.l2_latent > 0) else 0.0)
 
             main_loss = loss_reg + loss_reg_drop + kl_w * loss_kl + args.recon_weight * loss_recon + loss_l2
 
-            # Cross-modal contrastive alignment: pull available-modality
-            # representation towards CVAE posterior mean
-            if proj_contrast is not None and args.contrastive_weight > 0:
-                # h_avail: [B, 2*proj_dim] — what we have without seeing missing
-                # mu:      [B, latent_dim] — posterior mean (sees both avail + missing)
-                B = mu.shape[0]
-                z_avail = F.normalize(proj_contrast(h_avail), dim=-1)
-                z_mu = F.normalize(mu, dim=-1)
-                sim = z_avail @ z_mu.T / 0.07  # temperature
-                labels = torch.arange(B, device=mu.device)
-                loss_contrast = (F.cross_entropy(sim, labels) + F.cross_entropy(sim.T, labels)) / 2
-                main_loss = main_loss + args.contrastive_weight * loss_contrast
+            # ── Probabilistic-only auxiliary losses ──
+            if is_prob:
+                # Cross-modal contrastive alignment
+                if proj_contrast is not None and args.contrastive_weight > 0:
+                    B = mu.shape[0]
+                    z_avail = F.normalize(proj_contrast(h_avail), dim=-1)
+                    z_mu = F.normalize(mu, dim=-1)
+                    sim = z_avail @ z_mu.T / 0.07
+                    labels_ct = torch.arange(B, device=mu.device)
+                    loss_contrast = (F.cross_entropy(sim, labels_ct) + F.cross_entropy(sim.T, labels_ct)) / 2
+                    main_loss = main_loss + args.contrastive_weight * loss_contrast
 
-            # Teacher-Student distillation: teacher sees full modalities,
-            # student sees dropped; MSE forces student to match teacher
-            if teacher is not None and args.distill_weight > 0:
-                with torch.no_grad():
-                    teacher_pred, _ = teacher(x)  # full modalities
-                distill_loss = F.mse_loss(output_drop, teacher_pred.detach())
-                main_loss = main_loss + args.distill_weight * distill_loss
+                # Teacher-Student distillation
+                if teacher is not None and args.distill_weight > 0:
+                    with torch.no_grad():
+                        teacher_pred, _ = teacher(x)
+                    distill_loss = F.mse_loss(output_drop, teacher_pred.detach())
+                    main_loss = main_loss + args.distill_weight * distill_loss
 
             # Backward main loss (frees graph 1)
             if use_amp:
@@ -174,9 +184,8 @@ def train_epoch(model, optimizer, train_loader, args, epoch, fp16=False, recon_w
             else:
                 main_loss.backward()
 
-            # Cycle consistency: separate forward + backward to avoid
-            # two computation graphs alive simultaneously (OOM fix)
-            if args.cycle_weight > 0:
+            # Cycle consistency (probabilistic only)
+            if is_prob and args.cycle_weight > 0:
                 drop2 = (drop_idx + 1) % 3
                 output2, h_recon2, h_true2, mu2, logvar2, _ = model.forward_with_dropout(x, drop2)
                 loss_reg2 = l1(output2, labels)
@@ -196,7 +205,8 @@ def train_epoch(model, optimizer, train_loader, args, epoch, fp16=False, recon_w
                 epoch_kl += (loss_kl.item() + loss_kl2.item()) / 2
                 epoch_recon += (loss_recon.item() + loss_recon2.item()) / 2
             else:
-                epoch_kl += loss_kl.item()
+                if is_prob:
+                    epoch_kl += loss_kl.item()
                 epoch_recon += loss_recon.item()
         else:
             output_full = model(x)[0] if isinstance(model(x), tuple) else model(x)
@@ -218,7 +228,7 @@ def train_epoch(model, optimizer, train_loader, args, epoch, fp16=False, recon_w
             optimizer.step()
 
         epoch_loss += main_loss.item()
-        if args.mode in ['cvae', 'attn_cvae']:
+        if args.mode in ['cvae', 'attn_cvae', 'det_mlp', 'raw_mlp']:
             epoch_reg += (loss_reg.item() + loss_reg_drop.item())
         else:
             epoch_reg += loss_reg.item() if isinstance(loss_reg, torch.Tensor) else loss_reg
@@ -226,8 +236,11 @@ def train_epoch(model, optimizer, train_loader, args, epoch, fp16=False, recon_w
         if i_batch % args.log_interval == 0 and i_batch > 0:
             elapsed = time.time() - start
             msg = f"E {epoch:2d} | B {i_batch:4d}/{n_batches:4d} | T {elapsed*1000/args.log_interval:5.0f}ms | kl_w={kl_w:.3f}"
-            if args.mode in ['cvae', 'attn_cvae']:
-                msg += f" | Reg {epoch_reg/max(i_batch,1):.3f} | KL {epoch_kl/max(i_batch,1):.4f} | Recon {epoch_recon/max(i_batch,1):.4f}"
+            if args.mode in ['cvae', 'attn_cvae', 'det_mlp', 'raw_mlp']:
+                if args.mode in ['cvae', 'attn_cvae']:
+                    msg += f" | Reg {epoch_reg/max(i_batch,1):.3f} | KL {epoch_kl/max(i_batch,1):.4f} | Recon {epoch_recon/max(i_batch,1):.4f}"
+                else:
+                    msg += f" | Reg {epoch_reg/max(i_batch,1):.3f} | Recon {epoch_recon/max(i_batch,1):.4f}"
             else:
                 msg += f" | Loss {main_loss.item():.4f}"
             print(msg)
@@ -277,6 +290,22 @@ def main():
         dl, orig_dim = getdataloader(ns)
     print(f"Dims: {orig_dim}")
 
+    # Subsampling for dataset-scale experiments
+    if args.subset_size > 0:
+        from torch.utils.data import Subset, DataLoader
+        train_ds = dl["train"].dataset
+        n_train = len(train_ds)
+        if args.subset_size < n_train:
+            rng = torch.Generator().manual_seed(args.seed)
+            indices = torch.randperm(n_train, generator=rng)[:args.subset_size].tolist()
+            dl["train"] = DataLoader(
+                Subset(train_ds, indices),
+                batch_size=args.batch_size, shuffle=True,
+                num_workers=args.num_workers,
+                pin_memory=torch.cuda.is_available(),
+            )
+            print(f"Subsampled train: {n_train} → {args.subset_size} samples (seed={args.seed})")
+
     # Parse per-modality projection dimensions
     proj_dims = [int(x) for x in args.proj_dims.split(",")]
     if len(proj_dims) != len(orig_dim):
@@ -292,6 +321,14 @@ def main():
     elif args.mode == 'attn_cvae':
         from models.cvae_reconstruct import CVAEMSA_Attn
         model = CVAEMSA_Attn(orig_dim=orig_dim, proj_dims=proj_dims)
+    elif args.mode == 'det_mlp':
+        from models.cvae_reconstruct import CVAEMSA_DetMLP
+        model = CVAEMSA_DetMLP(orig_dim=orig_dim, cvae_hidden=args.cvae_hidden,
+                               proj_dims=proj_dims, out_dropout=args.dropout_prob)
+    elif args.mode == 'raw_mlp':
+        from models.cvae_reconstruct import CVAEMSA_RawMLP
+        model = CVAEMSA_RawMLP(orig_dim=orig_dim, proj_dims=proj_dims,
+                               out_dropout=args.dropout_prob)
     else:
         # Wire --dropout_prob to output head dropout (the main regularization knob)
         model = CVAEMSA(orig_dim=orig_dim, cvae_latent=args.cvae_latent, cvae_hidden=args.cvae_hidden,

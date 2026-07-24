@@ -573,6 +573,233 @@ class CVAEMSA_Attn(CVAEMSA):
         return output, h_recon, h_missing_true, mu, logvar, h_avail
 
 
+# ─── Deterministic MLP Reconstructor ─────────────────────────────────
+
+class DeterministicMLPReconstructor(nn.Module):
+    """
+    Deterministic MLP that maps available modalities → missing modality fusion
+    embedding. No encoder, no KL loss, no sampling — directly predicts h_missing
+    from h_avail. Used as ablation baseline to test whether VAE framework is
+    necessary when inference already uses deterministic z=0.
+    """
+    def __init__(self, proj_dim=40, num_mods=3, hidden_dim=64, proj_dims=None):
+        super().__init__()
+        if proj_dims is None:
+            proj_dims = [proj_dim] * num_mods
+        self.proj_dims = proj_dims
+        self.max_proj = max(proj_dims)
+        self.num_mods = num_mods
+
+        max_input = (num_mods - 1) * self.max_proj  # 80 with default [40,40,40]
+
+        self.mlp = nn.Sequential(
+            nn.Linear(max_input, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.max_proj),
+        )
+
+    def _pad_features(self, hs):
+        """Pad each h to max_proj dim, then concat."""
+        padded = []
+        for h in hs:
+            d = h.shape[-1]
+            if d < self.max_proj:
+                zeros = torch.zeros(*h.shape[:-1], self.max_proj - d,
+                                   device=h.device, dtype=h.dtype)
+                h = torch.cat([h, zeros], dim=-1)
+            padded.append(h)
+        return torch.cat(padded, dim=-1)
+
+    def forward(self, h_avail_list, drop_idx):
+        """h_avail_list → h_recon (sliced to target dim)."""
+        h_avail_padded = self._pad_features(h_avail_list)
+        target_dim = self.proj_dims[drop_idx]
+        h_recon_full = self.mlp(h_avail_padded)
+        return h_recon_full[:, :target_dim]
+
+    def reconstruct(self, h_avail_list, drop_idx):
+        """Inference-time forward (same as forward)."""
+        return self.forward(h_avail_list, drop_idx)
+
+
+class CVAEMSA_DetMLP(CVAEMSA):
+    """CVAE-MSA with deterministic MLP reconstructor instead of CVAE.
+
+    Same encoder backbone and output head as CVAEMSA, but uses a simple
+    MLP to predict missing modality embeddings from available ones.
+    No KL divergence, no latent variables, no sampling.
+    """
+    def __init__(self, *args, **kwargs):
+        proj_dims = kwargs.get('proj_dims', None)
+        super().__init__(*args, **kwargs)
+        # Override CVAE with deterministic MLP
+        self.cvae = DeterministicMLPReconstructor(
+            proj_dim=max(self.proj_dims) if hasattr(self, 'proj_dims') else 40,
+            num_mods=self.num_mods,
+            hidden_dim=kwargs.get('cvae_hidden', 64),
+            proj_dims=proj_dims,
+        )
+
+    def forward_with_dropout(self, x, drop_idx):
+        """Same as CVAEMSA but without mu/logvar — deterministic mapping."""
+        hs_true = []
+        for i in range(self.num_mods):
+            h, _ = self.encode_modality(x[i], i)
+            hs_true.append(h)
+
+        available_hs = [hs_true[i] for i in range(self.num_mods) if i != drop_idx]
+        h_missing_true = hs_true[drop_idx]
+
+        h_recon = self.cvae(available_hs, drop_idx)
+        h_avail_padded = self.cvae._pad_features(available_hs)
+
+        hs_final = []
+        for i in range(self.num_mods):
+            hs_final.append(h_recon if i == drop_idx else hs_true[i])
+
+        h_cat = torch.cat(hs_final, dim=-1)
+        output = self.output_head(h_cat)
+        return output, h_recon, h_missing_true, h_avail_padded
+
+
+# ─── Raw-Feature-Space MLP Reconstructor ─────────────────────────────
+
+class RawFeatureMLPReconstructor(nn.Module):
+    """
+    Raw-feature-space reconstructor for controlled comparison.
+
+    For text (drop_idx=0): reconstructs raw GloVe 768d from available
+    modalities, then projects back to fusion space via Linear(768→40).
+    For audio/vision: direct MLP→proj_dim (like det_mlp — raw audio 25d
+    and raw vision 171d are too small to benefit from raw-space modeling).
+
+    This directly tests the fusion-space design claim: if raw-space text
+    reconstruction (with ~220K extra params) underperforms fusion-space
+    CVAE (30K params), fusion-space is validated.
+    """
+    def __init__(self, proj_dim=40, num_mods=3, hidden_dim=256, raw_text_dim=768,
+                 proj_dims=None):
+        super().__init__()
+        if proj_dims is None:
+            proj_dims = [proj_dim] * num_mods
+        self.proj_dims = proj_dims
+        self.max_proj = max(proj_dims)
+        self.num_mods = num_mods
+        self.raw_text_dim = raw_text_dim
+
+        max_input = (num_mods - 1) * self.max_proj  # 80
+
+        # Shared trunk
+        self.shared = nn.Sequential(
+            nn.Linear(max_input, 128),
+            nn.ReLU(),
+            nn.Linear(128, hidden_dim),
+            nn.ReLU(),
+        )
+
+        # Text branch: hidden → 768 (raw GloVe) → max_proj (fusion)
+        self.text_raw_head = nn.Linear(hidden_dim, raw_text_dim)
+        self.text_proj_back = nn.Linear(raw_text_dim, self.max_proj)
+
+        # Audio/Vision branch: hidden → max_proj (direct, like det_mlp)
+        self.av_head = nn.Linear(hidden_dim, self.max_proj)
+
+    def _pad_features(self, hs):
+        padded = []
+        for h in hs:
+            d = h.shape[-1]
+            if d < self.max_proj:
+                zeros = torch.zeros(*h.shape[:-1], self.max_proj - d,
+                                   device=h.device, dtype=h.dtype)
+                h = torch.cat([h, zeros], dim=-1)
+            padded.append(h)
+        return torch.cat(padded, dim=-1)
+
+    def forward(self, h_avail_list, raw_text_true, drop_idx):
+        """
+        Args:
+            h_avail_list: available h tensors
+            raw_text_true: [B, 768] mean-pooled raw text (only used if drop_idx==0)
+            drop_idx: which modality is missing (0=T, 1=A, 2=V)
+        Returns:
+            h_recon: [B, target_dim]
+            raw_recon: [B, 768] or None (raw text reconstruction, only for drop_idx==0)
+        """
+        h_avail_padded = self._pad_features(h_avail_list)
+        h = self.shared(h_avail_padded)  # [B, hidden_dim]
+        target_dim = self.proj_dims[drop_idx]
+        raw_recon = None
+
+        if drop_idx == 0:
+            # Text: go through raw 768d bottleneck, then project to fusion
+            raw_recon = self.text_raw_head(h)          # [B, 768]
+            h_recon = self.text_proj_back(raw_recon)   # [B, max_proj]
+        else:
+            # Audio/Vision: direct to fusion space
+            h_recon = self.av_head(h)                  # [B, max_proj]
+
+        return h_recon[:, :target_dim], raw_recon
+
+    def reconstruct(self, h_avail_list, drop_idx):
+        """Inference-time forward. drop_idx determines branch."""
+        h_recon, _ = self.forward(h_avail_list, None, drop_idx)
+        return h_recon
+
+
+class CVAEMSA_RawMLP(CVAEMSA):
+    """
+    CVAE-MSA with raw-feature-space MLP reconstructor.
+
+    For missing text: reconstructs raw GloVe 768d → project → 40d fusion.
+    For missing audio/vision: direct MLP → fusion (no raw bottleneck needed
+    since raw A/V dims are small).
+
+    Adds ~230K reconstructor params (vs 30K for CVAE), serving as a
+    controlled comparison against raw-feature-space generative methods.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cvae = RawFeatureMLPReconstructor(
+            proj_dim=max(self.proj_dims) if hasattr(self, 'proj_dims') else 40,
+            num_mods=self.num_mods,
+            hidden_dim=256,
+            raw_text_dim=768,
+            proj_dims=self.proj_dims,
+        )
+
+    def forward_with_dropout(self, x, drop_idx):
+        """
+        Drop one modality, reconstruct via raw-feature-space MLP.
+        Returns:
+            (output, h_recon, h_missing_true, h_avail_padded)  — same as DetMLP
+        """
+        hs_true = []
+        for i in range(self.num_mods):
+            h, _ = self.encode_modality(x[i], i)
+            hs_true.append(h)
+
+        available_hs = [hs_true[i] for i in range(self.num_mods) if i != drop_idx]
+        h_missing_true = hs_true[drop_idx]
+
+        # Mean-pool raw text for reconstruction target (only used when text is dropped)
+        raw_text = x[0]  # [B, L, 768]
+        raw_text_true = raw_text.mean(dim=1)  # [B, 768]
+
+        h_recon, raw_recon = self.cvae(available_hs, raw_text_true, drop_idx)
+        h_avail_padded = self.cvae._pad_features(available_hs)
+
+        hs_final = []
+        for i in range(self.num_mods):
+            hs_final.append(h_recon if i == drop_idx else hs_true[i])
+
+        h_cat = torch.cat(hs_final, dim=-1)
+        output = self.output_head(h_cat)
+        # Return same 4-tuple as DetMLP: (output, h_recon, h_true, h_avail)
+        return output, h_recon, h_missing_true, h_avail_padded
+
+
 # ─── Sanity Check ───────────────────────────────────────────────────
 
 if __name__ == "__main__":
